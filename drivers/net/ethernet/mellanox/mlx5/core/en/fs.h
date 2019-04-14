@@ -118,6 +118,9 @@ enum {
 	MLX5E_L2_FT_LEVEL,
 	MLX5E_TTC_FT_LEVEL,
 	MLX5E_INNER_TTC_FT_LEVEL,
+#if defined(CONFIG_MLX5_EN_IPSEC) || defined(CONFIG_MLX5_EN_TLS)
+	MLX5E_ACCEL_FS_FT_LEVEL,
+#endif
 #ifdef CONFIG_MLX5_EN_ARFS
 	MLX5E_ARFS_FT_LEVEL
 #endif
@@ -198,6 +201,17 @@ struct mlx5e_arfs_tables {
 	struct workqueue_struct        *wq;
 };
 
+enum  accel_fs_type {
+	ACCEL_FS_IPV4_TCP,
+	ACCEL_FS_IPV6_TCP,
+	ACCEL_FS_NUM_TYPES,
+};
+
+struct mlx5e_accel_fs {
+	struct mlx5e_flow_table  accel_tables[ACCEL_FS_NUM_TYPES];
+	struct mlx5_flow_handle *default_rules[ACCEL_FS_NUM_TYPES];
+};
+
 int mlx5e_arfs_create_tables(struct mlx5e_priv *priv);
 void mlx5e_arfs_destroy_tables(struct mlx5e_priv *priv);
 int mlx5e_arfs_enable(struct mlx5e_priv *priv);
@@ -223,6 +237,9 @@ struct mlx5e_flow_steering {
 	struct mlx5e_ttc_table          inner_ttc;
 #ifdef CONFIG_MLX5_EN_ARFS
 	struct mlx5e_arfs_tables        arfs;
+#endif
+#if defined(CONFIG_MLX5_EN_IPSEC) || defined(CONFIG_MLX5_EN_TLS)
+	struct mlx5e_accel_fs           accel;
 #endif
 };
 

@@ -36,6 +36,7 @@
 #include <linux/tcp.h>
 #include <linux/mlx5/fs.h>
 #include "en.h"
+#include "en_accel/fs.h"
 #include "lib/mpfs.h"
 
 static int mlx5e_add_l2_flow_rule(struct mlx5e_priv *priv,
@@ -1560,11 +1561,16 @@ int mlx5e_create_flow_steering(struct mlx5e_priv *priv)
 		goto err_destroy_inner_ttc_table;
 	}
 
+	err = mlx5e_accel_fs_create_tables(priv);
+	if (err)
+		netdev_err(priv->netdev, "Failed to create accel_fs tables, err=%d\n",
+			   err);
+
 	err = mlx5e_create_l2_table(priv);
 	if (err) {
 		netdev_err(priv->netdev, "Failed to create l2 table, err=%d\n",
 			   err);
-		goto err_destroy_ttc_table;
+		goto err_destroy_accel_fs_and_ttc_table;
 	}
 
 	err = mlx5e_create_vlan_table(priv);
@@ -1580,7 +1586,8 @@ int mlx5e_create_flow_steering(struct mlx5e_priv *priv)
 
 err_destroy_l2_table:
 	mlx5e_destroy_l2_table(priv);
-err_destroy_ttc_table:
+err_destroy_accel_fs_and_ttc_table:
+	mlx5e_accel_fs_destroy_tables(priv);
 	mlx5e_destroy_ttc_table(priv, &priv->fs.ttc);
 err_destroy_inner_ttc_table:
 	mlx5e_destroy_inner_ttc_table(priv, &priv->fs.inner_ttc);
@@ -1594,6 +1601,7 @@ void mlx5e_destroy_flow_steering(struct mlx5e_priv *priv)
 {
 	mlx5e_destroy_vlan_table(priv);
 	mlx5e_destroy_l2_table(priv);
+	mlx5e_accel_fs_destroy_tables(priv);
 	mlx5e_destroy_ttc_table(priv, &priv->fs.ttc);
 	mlx5e_destroy_inner_ttc_table(priv, &priv->fs.inner_ttc);
 	mlx5e_arfs_destroy_tables(priv);
