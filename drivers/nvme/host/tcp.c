@@ -18,6 +18,10 @@
 #include "nvme.h"
 #include "fabrics.h"
 
+static unsigned int nvmeotcp_zerocopy;
+module_param(nvmeotcp_zerocopy, uint, 0644);
+MODULE_PARM_DESC(nvmeotcp_zerocopy, "NVMEoTCP zero-copy offload emulation: 0 = do not emulate zero-copy; 1 = emulate zero-copy by skipping the copy operation.");
+
 struct nvme_tcp_queue;
 
 enum nvme_tcp_send_state {
@@ -676,17 +680,21 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 		recv_len = min_t(size_t, recv_len,
 				iov_iter_count(&req->iter));
 
-		if (queue->data_digest)
-			ret = skb_copy_and_hash_datagram_iter(skb, *offset,
-				&req->iter, recv_len, queue->rcv_hash);
-		else
-			ret = skb_copy_datagram_iter(skb, *offset,
-					&req->iter, recv_len);
-		if (ret) {
-			dev_err(queue->ctrl->ctrl.device,
-				"queue %d failed to copy request %#x data",
-				nvme_tcp_queue_id(queue), rq->tag);
-			return ret;
+		if (!nvmeotcp_zerocopy || nvme_tcp_queue_id(queue) == 0) {
+			if (queue->data_digest)
+				ret = skb_copy_and_hash_datagram_iter(skb, *offset,
+						&req->iter, recv_len, queue->rcv_hash);
+			else
+				ret = skb_copy_datagram_iter(skb, *offset,
+						&req->iter, recv_len);
+			if (ret) {
+				dev_err(queue->ctrl->ctrl.device,
+						"queue %d failed to copy request %#x data",
+						nvme_tcp_queue_id(queue), rq->tag);
+				return ret;
+			}
+		} else {
+			iov_iter_advance(&req->iter, recv_len);
 		}
 
 		*len -= recv_len;
