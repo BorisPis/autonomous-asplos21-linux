@@ -17,6 +17,10 @@
 
 #include "nvmet.h"
 
+static unsigned int nvmeotcp_zerocopy;
+module_param(nvmeotcp_zerocopy, uint, 0644);
+MODULE_PARM_DESC(nvmeotcp_zerocopy, "NVMEoTCP zero-copy offload emulation: 0 = do not emulate zero-copy; 1 = emulate zero-copy by skipping the copy operation.");
+
 #define NVMET_TCP_DEF_INLINE_DATA_SIZE	(4 * PAGE_SIZE)
 
 #define NVMET_TCP_RECV_BUDGET		8
@@ -1029,12 +1033,19 @@ static void nvmet_tcp_prep_recv_ddgst(struct nvmet_tcp_cmd *cmd)
 
 static int nvmet_tcp_try_recv_data(struct nvmet_tcp_queue *queue)
 {
+	struct nvme_tcp_hdr *hdr = &queue->pdu.cmd.hdr;
 	struct nvmet_tcp_cmd  *cmd = queue->cmd;
 	int ret;
 
 	while (msg_data_left(&cmd->recv_msg)) {
-		ret = sock_recvmsg(cmd->queue->sock, &cmd->recv_msg,
-			cmd->recv_msg.msg_flags);
+		if (!nvmeotcp_zerocopy || hdr->type != nvme_tcp_h2c_data) {
+			ret = sock_recvmsg(cmd->queue->sock, &cmd->recv_msg,
+				cmd->recv_msg.msg_flags);
+		} else {
+			ret = sock_recvmsg(cmd->queue->sock, &cmd->recv_msg,
+				cmd->recv_msg.msg_flags | MSG_TRUNC);
+		}
+
 		if (ret <= 0)
 			return ret;
 

@@ -2141,6 +2141,8 @@ found_ok_skb:
 					copied = -EFAULT;
 				break;
 			}
+		} else {
+			iov_iter_advance(&msg->msg_iter, used);
 		}
 
 		WRITE_ONCE(*seq, *seq + used);
