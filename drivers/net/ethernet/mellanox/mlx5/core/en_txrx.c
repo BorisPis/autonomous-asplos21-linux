@@ -145,13 +145,13 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 	}
 
 	mlx5e_poll_ico_cq(&c->icosq.cq);
+	mlx5e_poll_ico_cq(&c->async_icosq.cq);
 
 	busy |= INDIRECT_CALL_2(rq->post_wqes,
 				mlx5e_post_rx_mpwqes,
 				mlx5e_post_rx_wqes,
 				rq);
 	if (xsk_open) {
-		mlx5e_poll_ico_cq(&c->xskicosq.cq);
 		busy |= mlx5e_poll_xdpsq_cq(&xsksq->cq);
 		busy_xsk |= mlx5e_napi_xsk_post(xsksq, xskrq);
 	}
@@ -181,11 +181,11 @@ int mlx5e_napi_poll(struct napi_struct *napi, int budget)
 
 	mlx5e_cq_arm(&rq->cq);
 	mlx5e_cq_arm(&c->icosq.cq);
+	mlx5e_cq_arm(&c->async_icosq.cq);
 	mlx5e_cq_arm(&c->xdpsq.cq);
 
 	if (xsk_open) {
 		mlx5e_handle_rx_dim(xskrq);
-		mlx5e_cq_arm(&c->xskicosq.cq);
 		mlx5e_cq_arm(&xsksq->cq);
 		mlx5e_cq_arm(&xskrq->cq);
 	}
