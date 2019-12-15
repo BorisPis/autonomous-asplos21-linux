@@ -601,7 +601,7 @@ void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 		wqe_counter = be16_to_cpu(cqe->wqe_counter);
 
 		do {
-			struct mlx5e_sq_wqe_info *wi;
+			struct mlx5e_icosq_wqe_info *wi;
 			u16 ci;
 
 			last_wqe = (sqcc == wqe_counter);

@@ -81,6 +81,16 @@ mlx5e_post_nop_fence(struct mlx5_wq_cyc *wq, u32 sqn, u16 *pc)
 	return wqe;
 }
 
+struct mlx5e_tx_wqe_info {
+	struct sk_buff *skb;
+	u32 num_bytes;
+	u8  num_wqebbs;
+	u8  num_dma;
+#ifdef CONFIG_MLX5_EN_TLS
+	struct page *resync_dump_frag_page;
+#endif
+};
+
 static inline void
 mlx5e_fill_sq_frag_edge(struct mlx5e_txqsq *sq, struct mlx5_wq_cyc *wq,
 			u16 pi, u16 nnops)
@@ -98,11 +108,23 @@ mlx5e_fill_sq_frag_edge(struct mlx5e_txqsq *sq, struct mlx5_wq_cyc *wq,
 	sq->stats->nop += nnops;
 }
 
+struct mlx5e_icosq_wqe_info {
+	u8 opcode;
+	u8 num_wqebbs;
+
+	/* Auxiliary data for different wqe types */
+	union {
+		struct {
+			struct mlx5e_rq *rq;
+		} umr;
+	};
+};
+
 static inline void mlx5e_fill_icosq_frag_edge(struct mlx5e_icosq *sq,
 					      struct mlx5_wq_cyc *wq,
 					      u16 pi, u16 nnops)
 {
-	struct mlx5e_sq_wqe_info *edge_wi, *wi = &sq->db.ico_wqe[pi];
+	struct mlx5e_icosq_wqe_info *edge_wi, *wi = &sq->db.ico_wqe[pi];
 
 	edge_wi = wi + nnops;
 
