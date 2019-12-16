@@ -27,6 +27,11 @@
 
 #define INL_HDR_START_SZ (sizeof(((struct mlx5_wqe_eth_seg *)NULL)->inline_hdr.start))
 
+enum mlx5e_icosq_wqe_type {
+	MLX5E_ICOSQ_WQE_NOP,
+	MLX5E_ICOSQ_WQE_UMR_RX,
+};
+
 static inline bool
 mlx5e_wqc_has_room_for(struct mlx5_wq_cyc *wq, u16 cc, u16 pc, u16 n)
 {
@@ -124,7 +129,7 @@ mlx5e_fill_sq_frag_edge(struct mlx5e_txqsq *sq, struct mlx5_wq_cyc *wq,
 }
 
 struct mlx5e_icosq_wqe_info {
-	u8 opcode;
+	u8 wqe_type;
 	u8 num_wqebbs;
 
 	/* Auxiliary data for different wqe types */
@@ -146,7 +151,7 @@ static inline void mlx5e_fill_icosq_frag_edge(struct mlx5e_icosq *sq,
 	/* fill sq frag edge with nops to avoid wqe wrapping two pages */
 	for (; wi < edge_wi; wi++) {
 		*wi = (struct mlx5e_icosq_wqe_info) {
-			.opcode     = MLX5_OPCODE_NOP,
+			.wqe_type   = MLX5E_ICOSQ_WQE_NOP,
 			.num_wqebbs = 1,
 		};
 

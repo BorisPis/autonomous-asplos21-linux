@@ -512,7 +512,7 @@ static int mlx5e_alloc_rx_mpwqe(struct mlx5e_rq *rq, u16 ix)
 	umr_wqe->uctrl.xlt_offset = cpu_to_be16(xlt_offset);
 
 	sq->db.ico_wqe[pi] = (struct mlx5e_icosq_wqe_info) {
-		.opcode     = MLX5_OPCODE_UMR,
+		.wqe_type   = MLX5E_ICOSQ_WQE_UMR_RX,
 		.num_wqebbs = MLX5E_UMR_WQEBBS,
 		.umr.rq     = rq,
 	};
@@ -613,6 +613,7 @@ void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 			ci = mlx5_wq_cyc_ctr2ix(&sq->wq, sqcc);
 			wi = &sq->db.ico_wqe[ci];
 
+			sqcc += wi->num_wqebbs;
 			if (last_wqe && unlikely(get_cqe_opcode(cqe) != MLX5_CQE_REQ)) {
 				netdev_WARN_ONCE(cq->channel->netdev,
 						 "Bad OP in ICOSQ CQE: 0x%x\n",
@@ -622,19 +623,18 @@ void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 				break;
 			}
 
-			if (likely(wi->opcode == MLX5_OPCODE_UMR)) {
-				sqcc += MLX5E_UMR_WQEBBS;
+			switch (wi->wqe_type) {
+			case MLX5E_ICOSQ_WQE_UMR_RX:
 				wi->umr.rq->mpwqe.umr_completed++;
-			} else if (likely(wi->opcode == MLX5_OPCODE_NOP)) {
-				sqcc++;
-			} else {
+				break;
+			case MLX5E_ICOSQ_WQE_NOP:
+				break;
+			default:
 				netdev_WARN_ONCE(cq->channel->netdev,
-						 "Bad OPCODE in ICOSQ WQE info: 0x%x\n",
-						 wi->opcode);
+						 "Bad WQE type in ICOSQ WQE info: 0x%x\n",
+						 wi->wqe_type);
 			}
-
 		} while (!last_wqe);
-
 	} while ((++i < MLX5E_TX_CQ_POLL_BUDGET) && (cqe = mlx5_cqwq_get_cqe(&cq->wq)));
 
 	sq->cc = sqcc;
