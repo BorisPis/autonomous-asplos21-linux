@@ -46,6 +46,19 @@ mlx5e_sq_fetch_wqe(struct mlx5e_txqsq *sq, size_t size, u16 *pi)
 	return wqe;
 }
 
+static inline void *
+mlx5e_icosq_fetch_wqe(struct mlx5e_icosq *sq, size_t size, u16 *pi)
+{
+	struct mlx5_wq_cyc *wq = &sq->wq;
+	void *wqe;
+
+	*pi  = mlx5_wq_cyc_ctr2ix(wq, sq->pc);
+	wqe = mlx5_wq_cyc_get_wqe(wq, *pi);
+	memset(wqe, 0, size);
+
+	return wqe;
+}
+
 static inline struct mlx5e_tx_wqe *
 mlx5e_post_nop(struct mlx5_wq_cyc *wq, u32 sqn, u16 *pc)
 {
