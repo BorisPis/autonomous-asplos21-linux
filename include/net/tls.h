@@ -595,12 +595,16 @@ tls_driver_ctx(const struct sock *sk, enum tls_offload_ctx_dir direction)
 #endif
 
 /* The TLS context is valid until sk_destruct is called */
-static inline void tls_offload_rx_resync_request(struct sock *sk, __be32 seq)
+#define RESYNC_REQ (1 << 0)
+#define RESYNC_REQ_FORCE (1 << 1)
+static inline void tls_offload_rx_resync_request(struct sock *sk, __be32 seq,
+						 bool force)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(sk);
 	struct tls_offload_context_rx *rx_ctx = tls_offload_ctx_rx(tls_ctx);
 
-	atomic64_set(&rx_ctx->resync_req, ((u64)ntohl(seq) << 32) | 1);
+	atomic64_set(&rx_ctx->resync_req, ((u64)ntohl(seq) << 32) | RESYNC_REQ |
+		     (force ? RESYNC_REQ_FORCE : 0));
 }
 
 static inline void
