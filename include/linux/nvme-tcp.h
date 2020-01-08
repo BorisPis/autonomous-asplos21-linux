@@ -13,6 +13,17 @@
 #define NVME_TCP_ADMIN_CCSZ	SZ_8K
 #define NVME_TCP_DIGEST_LENGTH	4
 
+struct event_stats_t {     // event = e = event = some chunk of code
+	long count;       // num of times e executed
+	cycles_t sum;     // sum of cycles executing e took
+	cycles_t sum2;    // sum of cycles^2 executing e took
+	cycles_t min;     // duration of shortest e
+	cycles_t max;     // duration of longest e
+	cycles_t before;  // time when most recent e started executing
+};
+
+typedef struct event_stats_t stats_t;
+
 enum nvme_tcp_pfv {
 	NVME_TCP_PFV_1_0 = 0x0,
 };

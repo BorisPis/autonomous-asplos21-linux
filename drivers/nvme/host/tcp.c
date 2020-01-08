@@ -18,9 +18,106 @@
 #include "nvme.h"
 #include "fabrics.h"
 
+#include <linux/cpu_profile.h>
+
 static unsigned int nvmeotcp_zerocopy;
 module_param(nvmeotcp_zerocopy, uint, 0644);
 MODULE_PARM_DESC(nvmeotcp_zerocopy, "NVMEoTCP zero-copy offload emulation: 0 = do not emulate zero-copy; 1 = emulate zero-copy by skipping the copy operation.");
+
+static unsigned int trace;
+module_param(trace, uint, 0644);
+MODULE_PARM_DESC(trace, "Enable tracing operations.");
+
+DEFINE_PER_CPU_ALIGNED(stats_t, copy_stats);
+DEFINE_PER_CPU_ALIGNED(stats_t, req_stats);
+bool			tracing;
+uint64_t fix;
+
+static void set_tracing_on(void)
+{
+	int i;
+
+	tracing = true;
+	for_each_possible_cpu(i) {
+		memset(&per_cpu(copy_stats, i), 0, sizeof(copy_stats));
+		memset(&per_cpu(req_stats, i), 0, sizeof(req_stats));
+	}
+}
+
+static void set_tracing_off(void)
+{
+	int i;
+
+	pr_err("tracing_off\n");
+	for_each_possible_cpu(i) {
+		pr_err("copy %d %lu %llu %llu %llu %llu\n",
+				i,
+				per_cpu(copy_stats, i).count,
+				per_cpu(copy_stats, i).sum,
+				per_cpu(copy_stats, i).sum2,
+				per_cpu(copy_stats, i).min,
+				per_cpu(copy_stats, i).max);
+	}
+	for_each_possible_cpu(i) {
+		pr_err("req %d %lu %llu %llu %llu %llu\n",
+				i,
+				per_cpu(req_stats, i).count,
+				per_cpu(req_stats, i).sum,
+				per_cpu(req_stats, i).sum2,
+				per_cpu(req_stats, i).min,
+				per_cpu(req_stats, i).max);
+	}
+	pr_err("tracing_off done\n");
+	tracing = 0;
+}
+
+static void trace_start(stats_t *stats)
+{
+	if (tracing) {
+		if (trace) {
+			stats->before = my_read_cycles();
+		} else {
+			set_tracing_off();
+		}
+	} else {
+		if (trace) {
+			set_tracing_on();
+			stats->before = my_read_cycles();
+		}
+	}
+}
+
+static void trace_end(stats_t *s)
+{
+	if (tracing) {
+		cycles_t after = my_update_cycles();
+
+		cycles_t sum;
+		cycles_t dif = after - s->before - fix;
+		s->sum += dif;
+		sum = s->sum;
+		if (sum) {
+			s->count += 1;
+			s->sum   += sum;
+			s->sum2  += (sum * sum);
+			if (!s->min || (sum < s->min))
+				s->min = sum;
+			if (!s->max || (sum > s->max))
+				s->max = sum;
+		}
+		s->before = 0;
+	}
+}
+
+/*
+static unsigned long long avg(stats_t *s) {    // average duration of event
+	return (s->sum) / (s->count);
+}
+
+static unsigned long long stddev(stats_t *s) { // standard deviation of event
+	return sqrt( double(sum2) -  avg()*avg() );
+}
+*/
 
 struct nvme_tcp_queue;
 
@@ -642,6 +739,7 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 	struct nvme_tcp_data_pdu *pdu = (void *)queue->pdu;
 	struct nvme_tcp_request *req;
 	struct request *rq;
+	unsigned long flags;
 
 	rq = blk_mq_tag_to_rq(nvme_tcp_tagset(queue), pdu->command_id);
 	if (!rq) {
@@ -680,6 +778,10 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 		recv_len = min_t(size_t, recv_len,
 				iov_iter_count(&req->iter));
 
+		
+		preempt_disable(); 			// disable preemption on this core
+		raw_local_irq_save(flags); 		// disable hard interrupts on this core
+		trace_start(this_cpu_ptr(&copy_stats));
 		if (!nvmeotcp_zerocopy || nvme_tcp_queue_id(queue) == 0) {
 			if (queue->data_digest)
 				ret = skb_copy_and_hash_datagram_iter(skb, *offset,
@@ -696,6 +798,7 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 		} else {
 			iov_iter_advance(&req->iter, recv_len);
 		}
+		trace_end(this_cpu_ptr(&copy_stats));
 
 		*len -= recv_len;
 		*offset += recv_len;
@@ -2408,6 +2511,8 @@ static int __init nvme_tcp_init_module(void)
 		return -ENOMEM;
 
 	nvmf_register_transport(&nvme_tcp_transport);
+
+	fix = calibrate();
 	return 0;
 }
 
