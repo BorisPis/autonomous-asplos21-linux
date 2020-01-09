@@ -347,7 +347,7 @@ static int tls_update_resync_sn(struct net_device *netdev,
 	skb->destructor = sock_edemux;
 
 	memcpy(&seq, &mdata->content.recv.sync_seq, sizeof(seq));
-	tls_offload_rx_resync_request(sk, seq);
+	tls_offload_rx_resync_request(sk, seq, false);
 out:
 	return 0;
 }
