@@ -528,7 +528,7 @@ int nfp_net_tls_rx_resync_req(struct net_device *netdev,
 
 	/* copy to ensure alignment */
 	memcpy(&tcp_seq, &req->tcp_seq, sizeof(tcp_seq));
-	tls_offload_rx_resync_request(sk, tcp_seq);
+	tls_offload_rx_resync_request(sk, tcp_seq, false);
 	atomic_inc(&nn->ktls_rx_resync_req);
 
 	sock_gen_put(sk);
