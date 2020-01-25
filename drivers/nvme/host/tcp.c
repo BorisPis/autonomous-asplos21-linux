@@ -37,6 +37,7 @@ static void set_tracing_on(void)
 {
 	int i;
 
+	fix = calibrate();
 	tracing = true;
 	for_each_possible_cpu(i) {
 		memset(&per_cpu(copy_stats, i), 0, sizeof(copy_stats));
@@ -46,11 +47,16 @@ static void set_tracing_on(void)
 
 static void set_tracing_off(void)
 {
+	tracing = false;
+}
+
+static void print_tracing(void)
+{
 	int i;
 
-	pr_err("tracing_off\n");
+	pr_err("tracing_off %4s %16s %16s %16s %16s %16s \n", "cpu", "count", "sum", "sum2", "min", "max");
 	for_each_possible_cpu(i) {
-		pr_err("copy %d %lu %llu %llu %llu %llu\n",
+		pr_err("copy %4d %16lu %16llu %16llu %16llu %16llu\n",
 				i,
 				per_cpu(copy_stats, i).count,
 				per_cpu(copy_stats, i).sum,
@@ -68,17 +74,12 @@ static void set_tracing_off(void)
 				per_cpu(req_stats, i).max);
 	}
 	pr_err("tracing_off done\n");
-	tracing = 0;
 }
 
 static void trace_start(stats_t *stats)
 {
 	if (tracing) {
-		if (trace) {
-			stats->before = my_read_cycles();
-		} else {
-			set_tracing_off();
-		}
+		stats->before = my_read_cycles();
 	} else {
 		if (trace) {
 			set_tracing_on();
@@ -92,20 +93,17 @@ static void trace_end(stats_t *s)
 	if (tracing) {
 		cycles_t after = my_update_cycles();
 
-		cycles_t sum;
 		cycles_t dif = after - s->before - fix;
 		s->sum += dif;
-		sum = s->sum;
-		if (sum) {
-			s->count += 1;
-			s->sum   += sum;
-			s->sum2  += (sum * sum);
-			if (!s->min || (sum < s->min))
-				s->min = sum;
-			if (!s->max || (sum > s->max))
-				s->max = sum;
-		}
+		s->count += 1;
+		s->sum2  += (dif * dif);
+		if (!s->min || (dif < s->min))
+			s->min = dif;
+		if (!s->max || (dif > s->max))
+			s->max = dif;
 		s->before = 0;
+		if (!trace)
+			set_tracing_off();
 	}
 }
 
@@ -779,9 +777,11 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 				iov_iter_count(&req->iter));
 
 		
-		preempt_disable(); 			// disable preemption on this core
-		raw_local_irq_save(flags); 		// disable hard interrupts on this core
-		trace_start(this_cpu_ptr(&copy_stats));
+		if (trace || tracing) {
+			preempt_disable(); 			// disable preemption on this core
+			raw_local_irq_save(flags); 		// disable hard interrupts on this core
+			trace_start(this_cpu_ptr(&copy_stats));
+		}
 		if (!nvmeotcp_zerocopy || nvme_tcp_queue_id(queue) == 0) {
 			if (queue->data_digest)
 				ret = skb_copy_and_hash_datagram_iter(skb, *offset,
@@ -798,7 +798,14 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 		} else {
 			iov_iter_advance(&req->iter, recv_len);
 		}
-		trace_end(this_cpu_ptr(&copy_stats));
+		if (tracing) {
+			trace_end(this_cpu_ptr(&copy_stats));
+			raw_local_irq_restore(flags); 		// enable hard interrupts on this core
+			preempt_enable(); 			// enable preemption on this core
+			if (unlikely(!tracing)) {
+				print_tracing();
+			}
+		}
 
 		*len -= recv_len;
 		*offset += recv_len;
@@ -2513,6 +2520,7 @@ static int __init nvme_tcp_init_module(void)
 	nvmf_register_transport(&nvme_tcp_transport);
 
 	fix = calibrate();
+	pr_err("%s callibration fix %llu\n", __func__, fix);
 	return 0;
 }
 
