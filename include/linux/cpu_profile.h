@@ -73,7 +73,7 @@ static uint64_t calibrate(void)
 	}
 
 	do_div(diff, ROUNDS);
-	printk(KERN_INFO "virtio_net: calibration  average is %llu clock cycles, min is %llu, max is %llu \n", diff, min, max);
+	printk(KERN_INFO "cpu_profile: calibration  average is %llu clock cycles, min is %llu, max is %llu \n", diff, min, max);
 	return diff;
 }
 
