@@ -731,6 +731,262 @@ static inline void nvme_tcp_end_request(struct request *rq, u16 status)
 	nvme_end_request(rq, cpu_to_le16(status << 1), res);
 }
 
+//////////////////////////////////////////////////////////////////////////
+static int __skb_datagram_iter(const struct sk_buff *skb, int offset,
+			       struct iov_iter *to, int len, bool fault_short,
+			       size_t (*cb)(const void *, size_t, void *,
+					    struct iov_iter *), void *data)
+{
+	int start = skb_headlen(skb);
+	int i, copy = start - offset, start_off = offset, n;
+	struct sk_buff *frag_iter;
+
+	/* Copy header. */
+	if (copy > 0) {
+		if (copy > len)
+			copy = len;
+		n = cb(skb->data + offset, copy, data, to);
+		offset += n;
+		if (n != copy)
+			goto short_copy;
+		if ((len -= copy) == 0)
+			return 0;
+	}
+
+	/* Copy paged appendix. Hmm... why does this look so complicated? */
+	for (i = 0; i < skb_shinfo(skb)->nr_frags; i++) {
+		int end;
+		const skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
+
+		WARN_ON(start > offset + len);
+
+		end = start + skb_frag_size(frag);
+		if ((copy = end - offset) > 0) {
+			struct page *page = skb_frag_page(frag);
+			u8 *vaddr = kmap(page);
+
+			if (copy > len)
+				copy = len;
+			n = cb(vaddr + skb_frag_off(frag) + offset - start,
+			       copy, data, to);
+			kunmap(page);
+			offset += n;
+			if (n != copy)
+				goto short_copy;
+			if (!(len -= copy))
+				return 0;
+		}
+		start = end;
+	}
+
+	skb_walk_frags(skb, frag_iter) {
+		int end;
+
+		WARN_ON(start > offset + len);
+
+		end = start + frag_iter->len;
+		if ((copy = end - offset) > 0) {
+			if (copy > len)
+				copy = len;
+			if (__skb_datagram_iter(frag_iter, offset - start,
+						to, copy, fault_short, cb, data))
+				goto fault;
+			if ((len -= copy) == 0)
+				return 0;
+			offset += copy;
+		}
+		start = end;
+	}
+	if (!len)
+		return 0;
+
+	/* This is not really a user copy fault, but rather someone
+	 * gave us a bogus length on the skb.  We should probably
+	 * print a warning here as it may indicate a kernel bug.
+	 */
+
+fault:
+	iov_iter_revert(to, offset - start_off);
+	return -EFAULT;
+
+short_copy:
+	if (fault_short || iov_iter_count(to))
+		goto fault;
+
+	return 0;
+}
+
+#define iterate_iovec(i, n, __v, __p, skip, STEP) {	\
+	size_t left;					\
+	size_t wanted = n;				\
+	__p = i->iov;					\
+	__v.iov_len = min(n, __p->iov_len - skip);	\
+	if (likely(__v.iov_len)) {			\
+		__v.iov_base = __p->iov_base + skip;	\
+		left = (STEP);				\
+		__v.iov_len -= left;			\
+		skip += __v.iov_len;			\
+		n -= __v.iov_len;			\
+	} else {					\
+		left = 0;				\
+	}						\
+	while (unlikely(!left && n)) {			\
+		__p++;					\
+		__v.iov_len = min(n, __p->iov_len);	\
+		if (unlikely(!__v.iov_len))		\
+			continue;			\
+		__v.iov_base = __p->iov_base;		\
+		left = (STEP);				\
+		__v.iov_len -= left;			\
+		skip = __v.iov_len;			\
+		n -= __v.iov_len;			\
+	}						\
+	n = wanted - n;					\
+}
+#define iterate_kvec(i, n, __v, __p, skip, STEP) {	\
+	size_t wanted = n;				\
+	__p = i->kvec;					\
+	__v.iov_len = min(n, __p->iov_len - skip);	\
+	if (likely(__v.iov_len)) {			\
+		__v.iov_base = __p->iov_base + skip;	\
+		(void)(STEP);				\
+		skip += __v.iov_len;			\
+		n -= __v.iov_len;			\
+	}						\
+	while (unlikely(n)) {				\
+		__p++;					\
+		__v.iov_len = min(n, __p->iov_len);	\
+		if (unlikely(!__v.iov_len))		\
+			continue;			\
+		__v.iov_base = __p->iov_base;		\
+		(void)(STEP);				\
+		skip = __v.iov_len;			\
+		n -= __v.iov_len;			\
+	}						\
+	n = wanted;					\
+}
+#define iterate_bvec(i, n, __v, __bi, skip, STEP) {	\
+	struct bvec_iter __start;			\
+	__start.bi_size = n;				\
+	__start.bi_bvec_done = skip;			\
+	__start.bi_idx = 0;				\
+	for_each_bvec(__v, i->bvec, __bi, __start) {	\
+		if (!__v.bv_len)			\
+			continue;			\
+		(void)(STEP);				\
+	}						\
+}
+#define iterate_and_advance(i, n, v, I, B, K) {			\
+	if (unlikely(i->count < n))				\
+		n = i->count;					\
+	if (i->count) {						\
+		size_t skip = i->iov_offset;			\
+		if (unlikely(i->type & ITER_BVEC)) {		\
+			const struct bio_vec *bvec = i->bvec;	\
+			struct bio_vec v;			\
+			struct bvec_iter __bi;			\
+			iterate_bvec(i, n, v, __bi, skip, (B))	\
+			i->bvec = __bvec_iter_bvec(i->bvec, __bi);	\
+			i->nr_segs -= i->bvec - bvec;		\
+			skip = __bi.bi_bvec_done;		\
+		} else if (unlikely(i->type & ITER_KVEC)) {	\
+			const struct kvec *kvec;		\
+			struct kvec v;				\
+			iterate_kvec(i, n, v, kvec, skip, (K))	\
+			if (skip == kvec->iov_len) {		\
+				kvec++;				\
+				skip = 0;			\
+			}					\
+			i->nr_segs -= kvec - i->kvec;		\
+			i->kvec = kvec;				\
+		} else if (unlikely(i->type & ITER_DISCARD)) {	\
+			skip += n;				\
+		} else {					\
+			const struct iovec *iov;		\
+			struct iovec v;				\
+			iterate_iovec(i, n, v, iov, skip, (I))	\
+			if (skip == iov->iov_len) {		\
+				iov++;				\
+				skip = 0;			\
+			}					\
+			i->nr_segs -= iov - i->iov;		\
+			i->iov = iov;				\
+		}						\
+		i->count -= n;					\
+		i->iov_offset = skip;				\
+	}							\
+}
+
+static int copyout(void __user *to, const void *from, size_t n)
+{
+	if (access_ok(to, n)) {
+		kasan_check_read(from, n);
+		n = raw_copy_to_user(to, from, n);
+	}
+	return n;
+}
+static void memcpy_to_page(struct page *page, size_t offset, const char *from, size_t len)
+{
+	char *to = kmap_atomic(page);
+	memcpy(to + offset, from, len);
+	kunmap_atomic(to);
+}
+
+static size_t nvme_copy_to_iter(const void *addr, size_t bytes, struct iov_iter *i)
+{
+	const char *from = addr;
+	if (iter_is_iovec(i))
+		might_fault();
+	iterate_and_advance(i, bytes, v,
+		copyout(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len),
+		memcpy_to_page(v.bv_page, v.bv_offset,
+			       (from += v.bv_len) - v.bv_len, v.bv_len),
+		memcpy(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len)
+	)
+
+	return bytes;
+}
+
+size_t nvme_hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
+		struct iov_iter *i)
+{
+#ifdef CONFIG_CRYPTO
+	struct ahash_request *hash = hashp;
+	struct scatterlist sg;
+	size_t copied;
+
+	copied = nvme_copy_to_iter(addr, bytes, i);
+	sg_init_one(&sg, addr, copied);
+	ahash_request_set_crypt(hash, &sg, NULL, copied);
+	crypto_ahash_update(hash);
+	return copied;
+#else
+	return 0;
+#endif
+}
+
+static int nvme_skb_copy_and_hash_datagram_iter(const struct sk_buff *skb, int offset,
+			   struct iov_iter *to, int len,
+			   struct ahash_request *hash)
+{
+	return __skb_datagram_iter(skb, offset, to, len, true,
+			nvme_hash_and_copy_to_iter, hash);
+}
+
+static size_t nvme_simple_copy_to_iter(const void *addr, size_t bytes,
+		void *data __always_unused, struct iov_iter *i)
+{
+	return nvme_copy_to_iter(addr, bytes, i);
+}
+
+static int nvme_skb_copy_datagram_iter(const struct sk_buff *skb, int offset,
+			   struct iov_iter *to, int len)
+{
+	return __skb_datagram_iter(skb, offset, to, len, false,
+			nvme_simple_copy_to_iter, NULL);
+}
+//////////////////////////////////////////////////////////////////////////
+
 static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 			      unsigned int *offset, size_t *len)
 {
@@ -784,10 +1040,10 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 		}
 		if (!nvmeotcp_zerocopy || nvme_tcp_queue_id(queue) == 0) {
 			if (queue->data_digest)
-				ret = skb_copy_and_hash_datagram_iter(skb, *offset,
+				ret = nvme_skb_copy_and_hash_datagram_iter(skb, *offset,
 						&req->iter, recv_len, queue->rcv_hash);
 			else
-				ret = skb_copy_datagram_iter(skb, *offset,
+				ret = nvme_skb_copy_datagram_iter(skb, *offset,
 						&req->iter, recv_len);
 			if (ret) {
 				dev_err(queue->ctrl->ctrl.device,
