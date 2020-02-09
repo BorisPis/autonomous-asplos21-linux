@@ -20,16 +20,22 @@
 
 #include <linux/cpu_profile.h>
 
+static unsigned int nvmeotcp_req;
+module_param(nvmeotcp_req, uint, 0644);
+MODULE_PARM_DESC(nvmeotcp_req, "NVMEoTCP req copy+crc skip.");
 static unsigned int nvmeotcp_zerocopy;
 module_param(nvmeotcp_zerocopy, uint, 0644);
 MODULE_PARM_DESC(nvmeotcp_zerocopy, "NVMEoTCP zero-copy offload emulation: 0 = do not emulate zero-copy; 1 = emulate zero-copy by skipping the copy operation.");
+static unsigned int nvmeotcp_zerocrc;
+module_param(nvmeotcp_zerocrc, uint, 0644);
+MODULE_PARM_DESC(nvmeotcp_zerocrc, "NVMEoTCP zero-crc offload emulation: 0 = do not emulate zero-crc; 1 = emulate zero-crc by skipping the crc operation.");
 
 static unsigned int trace;
 module_param(trace, uint, 0644);
 MODULE_PARM_DESC(trace, "Enable tracing operations.");
 
 DEFINE_PER_CPU_ALIGNED(stats_t, copy_stats);
-DEFINE_PER_CPU_ALIGNED(stats_t, req_stats);
+DEFINE_PER_CPU_ALIGNED(stats_t, crc_stats);
 bool			tracing;
 uint64_t fix;
 
@@ -41,7 +47,7 @@ static void set_tracing_on(void)
 	tracing = true;
 	for_each_possible_cpu(i) {
 		memset(&per_cpu(copy_stats, i), 0, sizeof(copy_stats));
-		memset(&per_cpu(req_stats, i), 0, sizeof(req_stats));
+		memset(&per_cpu(crc_stats, i), 0, sizeof(crc_stats));
 	}
 }
 
@@ -56,36 +62,32 @@ static void print_tracing(void)
 
 	pr_err("tracing_off %4s %16s %16s %16s %16s %16s \n", "cpu", "count", "sum", "sum2", "min", "max");
 	for_each_possible_cpu(i) {
-		pr_err("copy %4d %16lu %16llu %16llu %16llu %16llu\n",
-				i,
-				per_cpu(copy_stats, i).count,
-				per_cpu(copy_stats, i).sum,
-				per_cpu(copy_stats, i).sum2,
-				per_cpu(copy_stats, i).min,
-				per_cpu(copy_stats, i).max);
+		//if (per_cpu(copy_stats, i).sum)
+			pr_err("copy %4d %16lu %16llu %16llu %16llu %16llu\n",
+					i,
+					per_cpu(copy_stats, i).count,
+					per_cpu(copy_stats, i).sum,
+					per_cpu(copy_stats, i).sum2,
+					per_cpu(copy_stats, i).min,
+					per_cpu(copy_stats, i).max);
 	}
 	for_each_possible_cpu(i) {
-		pr_err("req %d %lu %llu %llu %llu %llu\n",
-				i,
-				per_cpu(req_stats, i).count,
-				per_cpu(req_stats, i).sum,
-				per_cpu(req_stats, i).sum2,
-				per_cpu(req_stats, i).min,
-				per_cpu(req_stats, i).max);
+		//if (per_cpu(crc_stats, i).sum)
+			pr_err("crc %4d %16lu %16llu %16llu %16llu %16llu\n",
+					i,
+					per_cpu(crc_stats, i).count,
+					per_cpu(crc_stats, i).sum,
+					per_cpu(crc_stats, i).sum2,
+					per_cpu(crc_stats, i).min,
+					per_cpu(crc_stats, i).max);
 	}
 	pr_err("tracing_off done\n");
 }
 
 static void trace_start(stats_t *stats)
 {
-	if (tracing) {
+	if (tracing)
 		stats->before = my_read_cycles();
-	} else {
-		if (trace) {
-			set_tracing_on();
-			stats->before = my_read_cycles();
-		}
-	}
 }
 
 static void trace_end(stats_t *s)
@@ -93,18 +95,38 @@ static void trace_end(stats_t *s)
 	if (tracing) {
 		cycles_t after = my_update_cycles();
 
+		//cycles_t dif = after - s->before;
 		cycles_t dif = after - s->before - fix;
 		s->sum += dif;
+#if 0
 		s->count += 1;
 		s->sum2  += (dif * dif);
 		if (!s->min || (dif < s->min))
 			s->min = dif;
 		if (!s->max || (dif > s->max))
 			s->max = dif;
+#endif
 		s->before = 0;
-		if (!trace)
-			set_tracing_off();
 	}
+}
+
+static inline void trace_calibrate(stats_t *s)
+{
+	if (tracing) {
+		s->sum -= fix;
+	}
+}
+
+static void trace_on(void)
+{
+	if (trace && !tracing)
+		set_tracing_on();
+}
+
+static void trace_off(void)
+{
+	if (!trace && tracing)
+		set_tracing_off();
 }
 
 /*
@@ -732,7 +754,7 @@ static inline void nvme_tcp_end_request(struct request *rq, u16 status)
 }
 
 //////////////////////////////////////////////////////////////////////////
-static int __skb_datagram_iter(const struct sk_buff *skb, int offset,
+static int __nvme_skb_datagram_iter(const struct sk_buff *skb, int offset,
 			       struct iov_iter *to, int len, bool fault_short,
 			       size_t (*cb)(const void *, size_t, void *,
 					    struct iov_iter *), void *data)
@@ -788,7 +810,7 @@ static int __skb_datagram_iter(const struct sk_buff *skb, int offset,
 		if ((copy = end - offset) > 0) {
 			if (copy > len)
 				copy = len;
-			if (__skb_datagram_iter(frag_iter, offset - start,
+			if (__nvme_skb_datagram_iter(frag_iter, offset - start,
 						to, copy, fault_short, cb, data))
 				goto fault;
 			if ((len -= copy) == 0)
@@ -816,7 +838,7 @@ short_copy:
 	return 0;
 }
 
-#define iterate_iovec(i, n, __v, __p, skip, STEP) {	\
+#define nvme_iterate_iovec(i, n, __v, __p, skip, STEP) {	\
 	size_t left;					\
 	size_t wanted = n;				\
 	__p = i->iov;					\
@@ -843,7 +865,8 @@ short_copy:
 	}						\
 	n = wanted - n;					\
 }
-#define iterate_kvec(i, n, __v, __p, skip, STEP) {	\
+
+#define nvme_iterate_kvec(i, n, __v, __p, skip, STEP) {	\
 	size_t wanted = n;				\
 	__p = i->kvec;					\
 	__v.iov_len = min(n, __p->iov_len - skip);	\
@@ -865,7 +888,8 @@ short_copy:
 	}						\
 	n = wanted;					\
 }
-#define iterate_bvec(i, n, __v, __bi, skip, STEP) {	\
+
+#define nvme_iterate_bvec(i, n, __v, __bi, skip, STEP) {	\
 	struct bvec_iter __start;			\
 	__start.bi_size = n;				\
 	__start.bi_bvec_done = skip;			\
@@ -876,7 +900,8 @@ short_copy:
 		(void)(STEP);				\
 	}						\
 }
-#define iterate_and_advance(i, n, v, I, B, K) {			\
+
+#define nvme_iterate_and_advance(i, n, v, I, B, K) {			\
 	if (unlikely(i->count < n))				\
 		n = i->count;					\
 	if (i->count) {						\
@@ -885,14 +910,14 @@ short_copy:
 			const struct bio_vec *bvec = i->bvec;	\
 			struct bio_vec v;			\
 			struct bvec_iter __bi;			\
-			iterate_bvec(i, n, v, __bi, skip, (B))	\
+			nvme_iterate_bvec(i, n, v, __bi, skip, (B))	\
 			i->bvec = __bvec_iter_bvec(i->bvec, __bi);	\
 			i->nr_segs -= i->bvec - bvec;		\
 			skip = __bi.bi_bvec_done;		\
 		} else if (unlikely(i->type & ITER_KVEC)) {	\
 			const struct kvec *kvec;		\
 			struct kvec v;				\
-			iterate_kvec(i, n, v, kvec, skip, (K))	\
+			nvme_iterate_kvec(i, n, v, kvec, skip, (K))	\
 			if (skip == kvec->iov_len) {		\
 				kvec++;				\
 				skip = 0;			\
@@ -904,7 +929,7 @@ short_copy:
 		} else {					\
 			const struct iovec *iov;		\
 			struct iovec v;				\
-			iterate_iovec(i, n, v, iov, skip, (I))	\
+			nvme_iterate_iovec(i, n, v, iov, skip, (I))	\
 			if (skip == iov->iov_len) {		\
 				iov++;				\
 				skip = 0;			\
@@ -917,7 +942,7 @@ short_copy:
 	}							\
 }
 
-static int copyout(void __user *to, const void *from, size_t n)
+static int nvme_copyout(void __user *to, const void *from, size_t n)
 {
 	if (access_ok(to, n)) {
 		kasan_check_read(from, n);
@@ -925,7 +950,7 @@ static int copyout(void __user *to, const void *from, size_t n)
 	}
 	return n;
 }
-static void memcpy_to_page(struct page *page, size_t offset, const char *from, size_t len)
+static void nvme_memcpy_to_page(struct page *page, size_t offset, const char *from, size_t len)
 {
 	char *to = kmap_atomic(page);
 	memcpy(to + offset, from, len);
@@ -935,14 +960,23 @@ static void memcpy_to_page(struct page *page, size_t offset, const char *from, s
 static size_t nvme_copy_to_iter(const void *addr, size_t bytes, struct iov_iter *i)
 {
 	const char *from = addr;
-	if (iter_is_iovec(i))
-		might_fault();
-	iterate_and_advance(i, bytes, v,
-		copyout(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len),
-		memcpy_to_page(v.bv_page, v.bv_offset,
-			       (from += v.bv_len) - v.bv_len, v.bv_len),
-		memcpy(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len)
-	)
+
+	trace_start(this_cpu_ptr(&copy_stats));
+	if (!nvmeotcp_zerocopy) {
+		if (iter_is_iovec(i))
+			might_fault();
+		nvme_iterate_and_advance(i, bytes, v,
+			nvme_copyout(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len),
+			nvme_memcpy_to_page(v.bv_page, v.bv_offset,
+				       (from += v.bv_len) - v.bv_len, v.bv_len),
+			memcpy(v.iov_base, (from += v.iov_len) - v.iov_len, v.iov_len)
+		)
+	} else {
+		if (iter_is_iovec(i))
+			might_fault();
+		nvme_iterate_and_advance(i, bytes, v, 0, 0, 0)
+	}
+	trace_end(this_cpu_ptr(&copy_stats));
 
 	return bytes;
 }
@@ -956,24 +990,52 @@ size_t nvme_hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
 	size_t copied;
 
 	copied = nvme_copy_to_iter(addr, bytes, i);
-	sg_init_one(&sg, addr, copied);
-	ahash_request_set_crypt(hash, &sg, NULL, copied);
-	crypto_ahash_update(hash);
+
+	trace_start(this_cpu_ptr(&crc_stats));
+	if (!nvmeotcp_zerocrc) {
+		sg_init_one(&sg, addr, copied);
+		ahash_request_set_crypt(hash, &sg, NULL, copied);
+		crypto_ahash_update(hash);
+	}
+	trace_end(this_cpu_ptr(&crc_stats));
 	return copied;
 #else
 	return 0;
 #endif
 }
 
-static int nvme_skb_copy_and_hash_datagram_iter(const struct sk_buff *skb, int offset,
+size_t nvme_hash_iter(const void *addr, size_t bytes, void *hashp,
+		struct iov_iter *i)
+{
+#ifdef CONFIG_CRYPTO
+	struct ahash_request *hash = hashp;
+	struct scatterlist sg;
+	size_t copied;
+
+	copied = bytes;
+
+	trace_start(this_cpu_ptr(&crc_stats));
+	if (!nvmeotcp_zerocrc) {
+		sg_init_one(&sg, addr, copied);
+		ahash_request_set_crypt(hash, &sg, NULL, copied);
+		crypto_ahash_update(hash);
+	}
+	trace_end(this_cpu_ptr(&crc_stats));
+	return copied;
+#else
+	return 0;
+#endif
+}
+
+static inline int nvme_skb_copy_and_hash_datagram_iter(const struct sk_buff *skb, int offset,
 			   struct iov_iter *to, int len,
 			   struct ahash_request *hash)
 {
-	return __skb_datagram_iter(skb, offset, to, len, true,
+	return __nvme_skb_datagram_iter(skb, offset, to, len, true,
 			nvme_hash_and_copy_to_iter, hash);
 }
 
-static size_t nvme_simple_copy_to_iter(const void *addr, size_t bytes,
+static inline size_t nvme_simple_copy_to_iter(const void *addr, size_t bytes,
 		void *data __always_unused, struct iov_iter *i)
 {
 	return nvme_copy_to_iter(addr, bytes, i);
@@ -982,7 +1044,7 @@ static size_t nvme_simple_copy_to_iter(const void *addr, size_t bytes,
 static int nvme_skb_copy_datagram_iter(const struct sk_buff *skb, int offset,
 			   struct iov_iter *to, int len)
 {
-	return __skb_datagram_iter(skb, offset, to, len, false,
+	return __nvme_skb_datagram_iter(skb, offset, to, len, false,
 			nvme_simple_copy_to_iter, NULL);
 }
 //////////////////////////////////////////////////////////////////////////
@@ -1033,12 +1095,15 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 				iov_iter_count(&req->iter));
 
 		
-		if (trace || tracing) {
+		if (trace && !tracing)
+			trace_on();
+
+		if (tracing) {
 			preempt_disable(); 			// disable preemption on this core
 			raw_local_irq_save(flags); 		// disable hard interrupts on this core
-			trace_start(this_cpu_ptr(&copy_stats));
+			//trace_start(this_cpu_ptr(&copy_stats));
 		}
-		if (!nvmeotcp_zerocopy || nvme_tcp_queue_id(queue) == 0) {
+		if (!nvmeotcp_req || nvme_tcp_queue_id(queue) == 0) {
 			if (queue->data_digest)
 				ret = nvme_skb_copy_and_hash_datagram_iter(skb, *offset,
 						&req->iter, recv_len, queue->rcv_hash);
@@ -1055,12 +1120,15 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 			iov_iter_advance(&req->iter, recv_len);
 		}
 		if (tracing) {
-			trace_end(this_cpu_ptr(&copy_stats));
+			//trace_end(this_cpu_ptr(&copy_stats));
+			//trace_calibrate(this_cpu_ptr(&crc_stats));
+			//trace_calibrate(this_cpu_ptr(&copy_stats));
 			raw_local_irq_restore(flags); 		// enable hard interrupts on this core
 			preempt_enable(); 			// enable preemption on this core
-			if (unlikely(!tracing)) {
-				print_tracing();
-			}
+		}
+		if (!trace && tracing) {
+			trace_off();
+			print_tracing();
 		}
 
 		*len -= recv_len;
@@ -1103,7 +1171,7 @@ static int nvme_tcp_recv_ddgst(struct nvme_tcp_queue *queue,
 	if (queue->ddgst_remaining)
 		return 0;
 
-	if (queue->recv_ddgst != queue->exp_ddgst && !nvmeotcp_zerocopy) {
+	if (queue->recv_ddgst != queue->exp_ddgst && !nvmeotcp_zerocopy && !nvmeotcp_zerocrc && !nvmeotcp_req) {
 		dev_err(queue->ctrl->ctrl.device,
 			"data digest error: recv %#x expected %#x\n",
 			le32_to_cpu(queue->recv_ddgst),
