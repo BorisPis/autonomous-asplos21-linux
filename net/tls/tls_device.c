@@ -714,7 +714,7 @@ void tls_device_rx_resync_new_rec(struct sock *sk, u32 rcd_len, u32 seq)
 		seq += TLS_HEADER_SIZE - 1;
 		is_req_pending = resync_req;
 
-		if (likely(!is_req_pending) || req_seq != seq ||
+		if (likely(!is_req_pending) || before(seq, req_seq) ||
 		    !atomic64_try_cmpxchg(&rx_ctx->resync_req, &resync_req, 0))
 			return;
 		break;
