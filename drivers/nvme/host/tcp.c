@@ -961,7 +961,7 @@ static size_t nvme_copy_to_iter(const void *addr, size_t bytes, struct iov_iter 
 {
 	const char *from = addr;
 
-	trace_start(this_cpu_ptr(&copy_stats));
+	//trace_start(this_cpu_ptr(&copy_stats));
 	if (!nvmeotcp_zerocopy) {
 		if (iter_is_iovec(i))
 			might_fault();
@@ -976,7 +976,7 @@ static size_t nvme_copy_to_iter(const void *addr, size_t bytes, struct iov_iter 
 			might_fault();
 		nvme_iterate_and_advance(i, bytes, v, 0, 0, 0)
 	}
-	trace_end(this_cpu_ptr(&copy_stats));
+	//trace_end(this_cpu_ptr(&copy_stats));
 
 	return bytes;
 }
@@ -1014,13 +1014,13 @@ size_t nvme_hash_iter(const void *addr, size_t bytes, void *hashp,
 
 	copied = bytes;
 
-	trace_start(this_cpu_ptr(&crc_stats));
+	//trace_start(this_cpu_ptr(&crc_stats));
 	if (!nvmeotcp_zerocrc) {
 		sg_init_one(&sg, addr, copied);
 		ahash_request_set_crypt(hash, &sg, NULL, copied);
 		crypto_ahash_update(hash);
 	}
-	trace_end(this_cpu_ptr(&crc_stats));
+	//trace_end(this_cpu_ptr(&crc_stats));
 	return copied;
 #else
 	return 0;
@@ -1041,11 +1041,33 @@ static inline size_t nvme_simple_copy_to_iter(const void *addr, size_t bytes,
 	return nvme_copy_to_iter(addr, bytes, i);
 }
 
+static inline int nvme_skb_copy_and_hash_datagram_iter2(const struct sk_buff *skb, int offset,
+			   struct iov_iter *to, int len,
+			   struct ahash_request *hash)
+{
+	int res;
+
+	trace_start(this_cpu_ptr(&crc_stats));
+	__nvme_skb_datagram_iter(skb, offset, to, len, true,
+				nvme_hash_iter, hash);
+	trace_end(this_cpu_ptr(&crc_stats));
+
+	trace_start(this_cpu_ptr(&copy_stats));
+	res =  __nvme_skb_datagram_iter(skb, offset, to, len, false,
+			nvme_simple_copy_to_iter, NULL);
+	trace_end(this_cpu_ptr(&copy_stats));
+	return res;
+}
+
 static int nvme_skb_copy_datagram_iter(const struct sk_buff *skb, int offset,
 			   struct iov_iter *to, int len)
 {
-	return __nvme_skb_datagram_iter(skb, offset, to, len, false,
+	int res;
+
+	trace_start(this_cpu_ptr(&copy_stats));
+	res = __nvme_skb_datagram_iter(skb, offset, to, len, false,
 			nvme_simple_copy_to_iter, NULL);
+	trace_end(this_cpu_ptr(&copy_stats));
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -1056,6 +1078,7 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 	struct nvme_tcp_request *req;
 	struct request *rq;
 	unsigned long flags;
+	bool zc = false;
 
 	rq = blk_mq_tag_to_rq(nvme_tcp_tagset(queue), pdu->command_id);
 	if (!rq) {
@@ -1094,7 +1117,20 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 		recv_len = min_t(size_t, recv_len,
 				iov_iter_count(&req->iter));
 
-		
+
+#define MIN_SKIP 8
+		if (recv_len > MIN_SKIP) {
+			const char *const_magic = "\xcc\xcc\xcc\xcc\xcc\xcc\xcc\xcc";
+			char magic[MIN_SKIP];
+
+			ret = skb_copy_bits(skb, *offset,
+					magic, MIN_SKIP);
+			if (memcmp(magic, const_magic, MIN_SKIP) == 0)
+				zc = true;
+			else
+				zc = false;
+		}
+
 		if (trace && !tracing)
 			trace_on();
 
@@ -1103,9 +1139,9 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 			raw_local_irq_save(flags); 		// disable hard interrupts on this core
 			//trace_start(this_cpu_ptr(&copy_stats));
 		}
-		if (!nvmeotcp_req || nvme_tcp_queue_id(queue) == 0) {
+		if (!nvmeotcp_req || !zc || nvme_tcp_queue_id(queue) == 0) {
 			if (queue->data_digest)
-				ret = nvme_skb_copy_and_hash_datagram_iter(skb, *offset,
+				ret = nvme_skb_copy_and_hash_datagram_iter2(skb, *offset,
 						&req->iter, recv_len, queue->rcv_hash);
 			else
 				ret = nvme_skb_copy_datagram_iter(skb, *offset,
