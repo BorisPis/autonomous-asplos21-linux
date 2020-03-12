@@ -208,6 +208,9 @@ enum  accel_fs_type {
 };
 
 struct mlx5e_accel_fs {
+	/* Protect accel rules list */
+	spinlock_t               lock;
+	struct workqueue_struct *wq;
 	struct mlx5e_flow_table  accel_tables[ACCEL_FS_NUM_TYPES];
 	struct mlx5_flow_handle *default_rules[ACCEL_FS_NUM_TYPES];
 };

@@ -224,6 +224,9 @@ void mlx5e_accel_fs_destroy_tables(struct mlx5e_priv *priv)
 
 	mlx5e_accel_fs_disable(priv);
 
+	/* TODO not symmetric */
+	destroy_workqueue(priv->fs.accel.wq);
+
 	for (i = 0; i < ACCEL_FS_NUM_TYPES; i++) {
 		if (!IS_ERR_OR_NULL(priv->fs.accel.accel_tables[i].t)) {
 			mlx5_del_flow_rules(priv->fs.accel.default_rules[i]);
@@ -265,6 +268,11 @@ static int mlx5e_accel_fs_enable(struct mlx5e_priv *priv)
 int mlx5e_accel_fs_create_tables(struct mlx5e_priv *priv)
 {
 	int i, err;
+
+	spin_lock_init(&priv->fs.accel.lock);
+	priv->fs.accel.wq = create_singlethread_workqueue("mlx5e_accel");
+	if (!priv->fs.accel.wq)
+		return -ENOMEM;
 
 	for (i = 0; i < ACCEL_FS_NUM_TYPES; i++) {
 		err = accel_fs_create_table(priv, i);
