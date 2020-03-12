@@ -51,7 +51,15 @@ struct mlx5e_ktls_offload_context_rx {
 	struct mlx5e_ktls_rx_resync_ctx resync;
 };
 
-static int mlx5e_ktls_create_tir(struct mlx5e_priv *priv, u32 *tirn, u32 rqtn)
+static void mlx5e_ktls_build_direct_tir_ctx(struct mlx5_core_dev *mdev,
+					    u32 rqn, u32 *tirc)
+{
+	MLX5_SET(tirc, tirc, transport_domain, mdev->mlx5e_res.td.tdn);
+	MLX5_SET(tirc, tirc, disp_type, MLX5_TIRC_DISP_TYPE_DIRECT);
+	MLX5_SET(tirc, tirc, inline_rqn, rqn);
+}
+
+static int mlx5e_ktls_create_tir(struct mlx5e_priv *priv, u32 *tirn, u32 rqn)
 {
 	struct mlx5_core_dev *mdev = priv->mdev;
 	int err, inlen;
@@ -66,7 +74,7 @@ static int mlx5e_ktls_create_tir(struct mlx5e_priv *priv, u32 *tirn, u32 rqtn)
 
 	tirc = MLX5_ADDR_OF(create_tir_in, in, ctx);
 	/* TODO improve: cache the context */
-	mlx5e_build_direct_tir_ctx(priv, rqtn, tirc);
+	mlx5e_ktls_build_direct_tir_ctx(mdev, rqn, tirc);
 	MLX5_SET(tirc, tirc, tls_en, 1);
 	MLX5_SET(tirc, tirc, self_lb_block,
 		 MLX5_TIRC_SELF_LB_BLOCK_BLOCK_UNICAST |
@@ -301,7 +309,8 @@ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 	struct mlx5e_ktls_offload_context_rx *rx_priv;
 	struct tls_context *tls_ctx = tls_get_ctx(sk);
 	int rxq = mlx5e_accel_sk_get_rxq(sk);
-	u32 rqtn;
+	struct mlx5e_channel *c;
+	u32 rqn;
 	int err;
 
 	rx_priv = kvzalloc(sizeof(*rx_priv), GFP_KERNEL);
@@ -320,15 +329,18 @@ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 
 	/* tc and underlay_qpn values are not in use for tls tis */
 	/* TODO: extract direct rqtn from socket */
-	rqtn = priv->direct_tir[rxq].rqt.rqtn;
+	c = priv->channels.c[rxq];
+	rqn = c->rq.rqn;
 
 	ktls_get_rq_stats(priv, rxq)->tls_ctx++;
 	/* TODO
 	stats->tls_ctx++;*/
-	err = mlx5e_ktls_create_tir(priv, &rx_priv->tirn, rqtn);
+	err = mlx5e_ktls_create_tir(priv, &rx_priv->tirn, rqn);
 	if (err)
 		goto fail;
 
+	printk(KERN_DEBUG "TT: %s, %d, rxq = 0x%x, rqn = 0x%x, tir created: 0x%x\n",
+	       __func__, __LINE__, rxq, rqn, rx_priv->tirn);
 	accel_rule_init(&rx_priv->rule, priv, sk);
 	mlx5e_accel_rx_resync_init(&rx_priv->resync, priv);
 	mlx5e_ktls_rx_post_param_wqes(priv->channels.c[rxq], rx_priv);
