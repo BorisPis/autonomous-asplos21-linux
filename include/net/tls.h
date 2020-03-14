@@ -247,6 +247,7 @@ struct tls_context {
 
 	bool in_tcp_sendpages;
 	bool pending_open_record_frags;
+	int max_tx_recsz;
 
 	struct mutex tx_lock; /* protects partially_sent_* fields and
 			       * per-type TX fields

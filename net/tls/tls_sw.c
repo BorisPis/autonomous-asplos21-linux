@@ -962,7 +962,7 @@ int tls_sw_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 		orig_size = msg_pl->sg.size;
 		full_record = false;
 		try_to_copy = msg_data_left(msg);
-		record_room = TLS_MAX_PAYLOAD_SIZE - msg_pl->sg.size;
+		record_room = tls_ctx->max_tx_recsz - msg_pl->sg.size;
 		if (try_to_copy >= record_room) {
 			try_to_copy = record_room;
 			full_record = true;
@@ -1160,7 +1160,7 @@ static int tls_sw_do_sendpage(struct sock *sk, struct page *page,
 		msg_pl = &rec->msg_plaintext;
 
 		full_record = false;
-		record_room = TLS_MAX_PAYLOAD_SIZE - msg_pl->sg.size;
+		record_room = tls_ctx->max_tx_recsz - msg_pl->sg.size;
 		copy = size;
 		if (copy >= record_room) {
 			copy = record_room;

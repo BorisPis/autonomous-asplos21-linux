@@ -329,6 +329,20 @@ static void tls_sk_proto_close(struct sock *sk, long timeout)
 	if (free_ctx)
 		tls_ctx_free(sk, ctx);
 }
+static int do_tls_getsockopt_recsz(struct sock *sk, char __user *optval,
+				   int __user *optlen)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+
+	if (!ctx)
+		return -EBUSY;
+	if (put_user(sizeof(int), optlen))
+		return -EFAULT;
+	if (put_user(ctx->max_tx_recsz, (int __user *)optval))
+		return -EFAULT;
+
+	return 0;
+}
 
 static int do_tls_getsockopt_tx(struct sock *sk, char __user *optval,
 				int __user *optlen)
@@ -428,6 +442,8 @@ static int do_tls_getsockopt(struct sock *sk, int optname,
 	int rc = 0;
 
 	switch (optname) {
+	case TLS_MAX_RECORD_SIZE:
+		rc = do_tls_getsockopt_recsz(sk, optval, optlen);
 	case TLS_TX:
 		rc = do_tls_getsockopt_tx(sk, optval, optlen);
 		break;
@@ -450,6 +466,24 @@ static int tls_getsockopt(struct sock *sk, int level, int optname,
 	return do_tls_getsockopt(sk, optname, optval, optlen);
 }
 
+static int do_tls_setsockopt_recsz(struct sock *sk, char __user *optval,
+				   unsigned int optlen)
+{
+	struct tls_context *ctx = tls_get_ctx(sk);
+	int recsz;
+
+	if (optlen < sizeof(int))
+		return -EINVAL;
+
+	if (get_user(recsz, (int __user *)optval))
+		return -EFAULT;
+
+	if (recsz > TLS_MAX_PAYLOAD_SIZE || recsz < 0)
+		return -EINVAL;
+
+	ctx->max_tx_recsz = recsz;
+	return 0;
+}
 static int do_tls_setsockopt_conf(struct sock *sk, char __user *optval,
 				  unsigned int optlen, int tx)
 {
@@ -585,6 +619,11 @@ static int do_tls_setsockopt(struct sock *sk, int optname,
 	int rc = 0;
 
 	switch (optname) {
+	case TLS_MAX_RECORD_SIZE:
+		lock_sock(sk);
+		rc = do_tls_setsockopt_recsz(sk, optval, optlen);
+		release_sock(sk);
+		break;
 	case TLS_TX:
 	case TLS_RX:
 		lock_sock(sk);
@@ -623,6 +662,7 @@ struct tls_context *tls_ctx_create(struct sock *sk)
 	mutex_init(&ctx->tx_lock);
 	rcu_assign_pointer(icsk->icsk_ulp_data, ctx);
 	ctx->sk_proto = READ_ONCE(sk->sk_prot);
+	ctx->max_tx_recsz = TLS_MAX_PAYLOAD_SIZE;
 	return ctx;
 }
 
