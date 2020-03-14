@@ -30,6 +30,19 @@ static unsigned int nvmeotcp_zerocrc;
 module_param(nvmeotcp_zerocrc, uint, 0644);
 MODULE_PARM_DESC(nvmeotcp_zerocrc, "NVMEoTCP zero-crc offload emulation: 0 = do not emulate zero-crc; 1 = emulate zero-crc by skipping the crc operation.");
 
+static unsigned int nvmeotcp_inflight;
+module_param(nvmeotcp_inflight, uint, 0444);
+MODULE_PARM_DESC(nvmeotcp_inflight, "NVMEoTCP inflight requests");
+static unsigned int nvmeotcp_inflight1;
+module_param(nvmeotcp_inflight1, uint, 0444);
+MODULE_PARM_DESC(nvmeotcp_inflight1, "NVMEoTCP inflight requests");
+static unsigned int nvmeotcp_inflight2;
+module_param(nvmeotcp_inflight2, uint, 0444);
+MODULE_PARM_DESC(nvmeotcp_inflight2, "NVMEoTCP inflight requests");
+static unsigned int nvmeotcp_inflight3;
+module_param(nvmeotcp_inflight3, uint, 0444);
+MODULE_PARM_DESC(nvmeotcp_inflight3, "NVMEoTCP inflight requests");
+
 static unsigned int trace;
 module_param(trace, uint, 0644);
 MODULE_PARM_DESC(trace, "Enable tracing operations.");
@@ -379,6 +392,14 @@ static inline void nvme_tcp_queue_request(struct nvme_tcp_request *req)
 	spin_unlock(&queue->lock);
 
 	queue_work_on(queue->io_cpu, nvme_tcp_wq, &queue->io_work);
+	if (queue->io_cpu == 0)
+		nvmeotcp_inflight++;
+	else if (queue->io_cpu == 2)
+		nvmeotcp_inflight1++;
+	else if (queue->io_cpu == 4)
+		nvmeotcp_inflight2++;
+	else if (queue->io_cpu == 6)
+		nvmeotcp_inflight3++;
 }
 
 static inline struct nvme_tcp_request *
@@ -562,6 +583,14 @@ static int nvme_tcp_process_nvme_cqe(struct nvme_tcp_queue *queue,
 
 	nvme_end_request(rq, cqe->status, cqe->result);
 	queue->nr_cqe++;
+	if (queue->io_cpu == 0)
+		nvmeotcp_inflight--;
+	else if (queue->io_cpu == 2)
+		nvmeotcp_inflight1--;
+	else if (queue->io_cpu == 4)
+		nvmeotcp_inflight2--;
+	else if (queue->io_cpu == 6)
+		nvmeotcp_inflight3--;
 
 	return 0;
 }
@@ -748,9 +777,19 @@ static int nvme_tcp_recv_pdu(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 
 static inline void nvme_tcp_end_request(struct request *rq, u16 status)
 {
+	struct nvme_tcp_request *req = blk_mq_rq_to_pdu(rq);
+	struct nvme_tcp_queue *queue = req->queue;
 	union nvme_result res = {};
 
 	nvme_end_request(rq, cpu_to_le16(status << 1), res);
+	if (queue->io_cpu == 0)
+		nvmeotcp_inflight--;
+	else if (queue->io_cpu == 2)
+		nvmeotcp_inflight1--;
+	else if (queue->io_cpu == 4)
+		nvmeotcp_inflight2--;
+	else if (queue->io_cpu == 6)
+		nvmeotcp_inflight3--;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -1068,6 +1107,7 @@ static int nvme_skb_copy_datagram_iter(const struct sk_buff *skb, int offset,
 	res = __nvme_skb_datagram_iter(skb, offset, to, len, false,
 			nvme_simple_copy_to_iter, NULL);
 	trace_end(this_cpu_ptr(&copy_stats));
+	return res;
 }
 //////////////////////////////////////////////////////////////////////////
 
@@ -1508,7 +1548,7 @@ static int nvme_tcp_try_recv(struct nvme_tcp_queue *queue)
 	int consumed;
 
 	rd_desc.arg.data = queue;
-	rd_desc.count = 1;
+	rd_desc.count = 64;
 	lock_sock(sk);
 	queue->nr_cqe = 0;
 	consumed = sock->ops->read_sock(sk, &rd_desc, nvme_tcp_recv_skb);
@@ -1520,7 +1560,7 @@ static void nvme_tcp_io_work(struct work_struct *w)
 {
 	struct nvme_tcp_queue *queue =
 		container_of(w, struct nvme_tcp_queue, io_work);
-	unsigned long deadline = jiffies + msecs_to_jiffies(1);
+	unsigned long deadline = jiffies + msecs_to_jiffies(1000);
 
 	do {
 		bool pending = false;
@@ -1805,6 +1845,7 @@ static int nvme_tcp_alloc_queue(struct nvme_ctrl *nctrl,
 	else
 		n = (qid - 1) % num_online_cpus();
 	queue->io_cpu = cpumask_next_wrap(n - 1, cpu_online_mask, -1, false);
+	pr_err("Creating queue on io_cpu %d\n", queue->io_cpu);
 	queue->request = NULL;
 	queue->data_remaining = 0;
 	queue->ddgst_remaining = 0;
@@ -2873,12 +2914,16 @@ static struct nvmf_transport_ops nvme_tcp_transport = {
 static int __init nvme_tcp_init_module(void)
 {
 	nvme_tcp_wq = alloc_workqueue("nvme_tcp_wq",
-			WQ_MEM_RECLAIM | WQ_HIGHPRI, 0);
+			WQ_HIGHPRI, 0);
 	if (!nvme_tcp_wq)
 		return -ENOMEM;
 
 	nvmf_register_transport(&nvme_tcp_transport);
 
+	nvmeotcp_inflight = 0;
+	nvmeotcp_inflight1 = 0;
+	nvmeotcp_inflight2 = 0;
+	nvmeotcp_inflight3 = 0;
 	fix = calibrate();
 	pr_err("%s callibration fix %llu\n", __func__, fix);
 	return 0;
