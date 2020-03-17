@@ -17,6 +17,134 @@ static int fs_accel2tt(enum accel_fs_type i)
 	}
 }
 
+/* TODO minimize runtime writes, have pre-calculated ones */
+static void mlx5e_accel_set_ipv4_flow(struct mlx5_flow_spec *spec,
+				      struct sock *sk)
+{
+	MLX5_SET(fte_match_param, spec->match_value,
+		 outer_headers.ethertype,
+		 ETH_P_IP);
+	memcpy(MLX5_ADDR_OF(fte_match_param, spec->match_value,
+			    outer_headers.src_ipv4_src_ipv6.ipv4_layout.ipv4),
+	       &inet_sk(sk)->inet_daddr,
+	       4);
+	memcpy(MLX5_ADDR_OF(fte_match_param, spec->match_value,
+			    outer_headers.dst_ipv4_dst_ipv6.ipv4_layout.ipv4),
+	       &inet_sk(sk)->inet_rcv_saddr,
+	       4);
+	MLX5_SET_TO_ONES(fte_match_param, spec->match_criteria,
+			 outer_headers.src_ipv4_src_ipv6.ipv4_layout.ipv4);
+	MLX5_SET_TO_ONES(fte_match_param, spec->match_criteria,
+			 outer_headers.dst_ipv4_dst_ipv6.ipv4_layout.ipv4);
+}
+
+static void mlx5e_accel_set_ipv6_flow(struct mlx5_flow_spec *spec,
+				      struct sock *sk)
+{
+	MLX5_SET(fte_match_param, spec->match_value,
+		 outer_headers.ethertype,
+		 ETH_P_IPV6);
+	memcpy(MLX5_ADDR_OF(fte_match_param, spec->match_value,
+			    outer_headers.src_ipv4_src_ipv6.ipv6_layout.ipv6),
+	       &sk->sk_v6_daddr,
+	       16);
+	memcpy(MLX5_ADDR_OF(fte_match_param, spec->match_value,
+			    outer_headers.dst_ipv4_dst_ipv6.ipv6_layout.ipv6),
+	       &inet6_sk(sk)->saddr,
+	       16);
+	memset(MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
+			    outer_headers.src_ipv4_src_ipv6.ipv6_layout.ipv6),
+	       0xff,
+	       16);
+	memset(MLX5_ADDR_OF(fte_match_param, spec->match_criteria,
+			    outer_headers.dst_ipv4_dst_ipv6.ipv6_layout.ipv6),
+	       0xff,
+	       16);
+}
+
+struct mlx5_flow_handle *mlx5e_accel_fs_add_flow(struct mlx5e_priv *priv,
+						 struct sock *sk, u32 tirn,
+						 uint32_t flow_tag)
+{
+	struct mlx5_flow_spec *spec = kvzalloc(sizeof(*spec), GFP_KERNEL);
+	/* TODO save this allocation */
+	struct mlx5_flow_destination dest = {};
+	struct mlx5_flow_handle *flow;
+	struct mlx5e_flow_table *ft;
+	MLX5_DECLARE_FLOW_ACT(flow_act);
+
+	/* match outer headers, don't know what it means */
+	spec->match_criteria_enable = MLX5_MATCH_OUTER_HEADERS;
+
+	/* IPv4/IPv6 packet */
+	MLX5_SET_TO_ONES(fte_match_param, spec->match_criteria,
+			 outer_headers.ethertype);
+	switch (sk->sk_family) {
+	case AF_INET:
+		mlx5e_accel_set_ipv4_flow(spec, sk);
+		ft = &priv->fs.accel.accel_tables[ACCEL_FS_IPV4_TCP];
+		mlx5e_dbg(HW, priv, "%s flow is %pI4:%d -> %pI4:%d\n", __func__,
+			  &inet_sk(sk)->inet_rcv_saddr,
+			  inet_sk(sk)->inet_sport,
+			  &inet_sk(sk)->inet_daddr,
+			  inet_sk(sk)->inet_dport);
+	break;
+#if IS_ENABLED(CONFIG_IPV6)
+	case AF_INET6:
+		if (!sk->sk_ipv6only &&
+		    ipv6_addr_type(&sk->sk_v6_daddr) == IPV6_ADDR_MAPPED) {
+			mlx5e_accel_set_ipv4_flow(spec, sk);
+			ft = &priv->fs.accel.accel_tables[ACCEL_FS_IPV4_TCP];
+			break;
+		}
+		mlx5e_accel_set_ipv6_flow(spec, sk);
+		ft = &priv->fs.accel.accel_tables[ACCEL_FS_IPV6_TCP];
+	break;
+#endif
+	default:
+		kfree(spec);
+		return ERR_PTR(-EINVAL);
+	}
+
+	if (!ft) {
+		kfree(spec);
+		return ERR_PTR(-EINVAL);
+	}
+
+	MLX5_SET_TO_ONES(fte_match_param, spec->match_criteria,
+			 outer_headers.tcp_dport);
+	MLX5_SET_TO_ONES(fte_match_param, spec->match_criteria,
+			 outer_headers.tcp_sport);
+	MLX5_SET(fte_match_param, spec->match_value, outer_headers.tcp_dport,
+		 htons(inet_sk(sk)->inet_sport));
+	MLX5_SET(fte_match_param, spec->match_value, outer_headers.tcp_sport,
+		 htons(inet_sk(sk)->inet_dport));
+
+	dest.type = MLX5_FLOW_DESTINATION_TYPE_TIR;
+	dest.tir_num = tirn;
+	if (flow_tag != MLX5_FS_DEFAULT_FLOW_TAG) {
+		spec->flow_context.flow_tag = flow_tag;
+		spec->flow_context.flags = FLOW_CONTEXT_HAS_TAG;
+	}
+
+	flow = mlx5_add_flow_rules(ft->t,
+				   spec,
+				   &flow_act,
+				   &dest,
+				   1);
+
+	if (IS_ERR_OR_NULL(flow)) {
+		mlx5_core_err(priv->mdev,
+			      "mlx5_add_flow_rules() failed, flow is %ld\n",
+			      PTR_ERR(flow));
+		flow = NULL;
+	}
+
+	kvfree(spec);
+
+	return flow;
+}
+
 static int accel_fs_add_default_rule(struct mlx5e_priv *priv,
 				     enum accel_fs_type type)
 {
