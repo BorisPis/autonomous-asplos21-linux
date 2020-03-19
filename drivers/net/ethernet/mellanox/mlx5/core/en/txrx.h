@@ -101,8 +101,10 @@ mlx5e_fill_sq_frag_edge(struct mlx5e_txqsq *sq, struct mlx5_wq_cyc *wq,
 
 	/* fill sq frag edge with nops to avoid wqe wrapping two pages */
 	for (; wi < edge_wi; wi++) {
-		memset(wi, 0, sizeof(*wi));
-		wi->num_wqebbs = 1;
+		*wi = (struct mlx5e_tx_wqe_info) {
+			.num_wqebbs = 1,
+		};
+
 		mlx5e_post_nop(wq, sq->sqn, &sq->pc);
 	}
 	sq->stats->nop += nnops;
@@ -130,8 +132,11 @@ static inline void mlx5e_fill_icosq_frag_edge(struct mlx5e_icosq *sq,
 
 	/* fill sq frag edge with nops to avoid wqe wrapping two pages */
 	for (; wi < edge_wi; wi++) {
-		wi->opcode = MLX5_OPCODE_NOP;
-		wi->num_wqebbs = 1;
+		*wi = (struct mlx5e_icosq_wqe_info) {
+			.opcode     = MLX5_OPCODE_NOP,
+			.num_wqebbs = 1,
+		};
+
 		mlx5e_post_nop(wq, sq->sqn, &sq->pc);
 	}
 }

@@ -1351,9 +1351,10 @@ static void mlx5e_deactivate_txqsq(struct mlx5e_txqsq *sq)
 		struct mlx5e_tx_wqe *nop;
 
 		wi = &sq->db.wqe_info[pi];
+		*wi = (struct mlx5e_tx_wqe_info) {
+			.num_wqebbs = 1,
+		};
 
-		memset(wi, 0, sizeof(*wi));
-		wi->num_wqebbs = 1;
 		nop = mlx5e_post_nop(wq, sq->sqn, &sq->pc);
 		mlx5e_notify_hw(wq, sq->pc, sq->uar_map, &nop->ctrl);
 	}
@@ -1471,14 +1472,16 @@ int mlx5e_open_xdpsq(struct mlx5e_channel *c, struct mlx5e_params *params,
 			struct mlx5_wqe_eth_seg  *eseg = &wqe->eth;
 			struct mlx5_wqe_data_seg *dseg;
 
+			*wi = (struct mlx5e_xdp_wqe_info) {
+				.num_wqebbs = 1,
+				.num_pkts   = 1,
+			};
+
 			cseg->qpn_ds = cpu_to_be32((sq->sqn << 8) | ds_cnt);
 			eseg->inline_hdr.sz = cpu_to_be16(inline_hdr_sz);
 
 			dseg = (struct mlx5_wqe_data_seg *)cseg + (ds_cnt - 1);
 			dseg->lkey = sq->mkey_be;
-
-			wi->num_wqebbs = 1;
-			wi->num_pkts   = 1;
 		}
 	}
 

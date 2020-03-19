@@ -151,8 +151,11 @@ mlx5e_fill_xdpsq_frag_edge(struct mlx5e_xdpsq *sq, struct mlx5_wq_cyc *wq,
 	edge_wi = wi + nnops;
 	/* fill sq frag edge with nops to avoid wqe wrapping two pages */
 	for (; wi < edge_wi; wi++) {
-		wi->num_wqebbs = 1;
-		wi->num_pkts   = 0;
+		*wi = (struct mlx5e_xdp_wqe_info) {
+			.num_wqebbs = 1,
+			.num_pkts   = 0,
+		};
+
 		mlx5e_post_nop(wq, sq->sqn, &sq->pc);
 	}
 
