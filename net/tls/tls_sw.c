@@ -42,6 +42,77 @@
 #include <net/strparser.h>
 #include <net/tls.h>
 
+#include <linux/cpu_profile.h>
+
+//////////////////////////////////////////////////
+// Tracing
+//////////////////////////////////////////////////
+static unsigned int trace;
+module_param(trace, uint, 0644);
+MODULE_PARM_DESC(trace, "Enable tracing operations.");
+
+struct event_stats_t {     // event = e = event = some chunk of code
+	cycles_t sum;     // sum of cycles executing e took
+	cycles_t before;  // time when most recent e started executing
+};
+typedef struct event_stats_t stats_t;
+
+stats_t 		cycles_enc;
+stats_t 		cycles_dec;
+
+bool			tracing;
+uint64_t		 fix;
+
+static void set_tracing_on(void)
+{
+	fix = calibrate();
+	tracing = true;
+	memset(&cycles_enc, 0, sizeof(cycles_enc));
+	memset(&cycles_dec, 0, sizeof(cycles_dec));
+}
+
+static void set_tracing_off(void)
+{
+	tracing = false;
+}
+
+static void print_tracing(void)
+{
+	pr_err("tls trace %16s %16s\n", "enc", "dec");
+	pr_err("tls trace %16llu %16llu\n", cycles_enc.sum, cycles_dec.sum);
+}
+
+static void trace_start(stats_t *stats)
+{
+	if (tracing)
+		stats->before = my_read_cycles();
+}
+
+static void trace_end(stats_t *s)
+{
+	if (tracing) {
+		cycles_t after = my_update_cycles();
+		cycles_t dif = after - s->before - fix;
+		s->sum += dif;
+		s->before = 0;
+	}
+}
+
+static void trace_on(void)
+{
+	if (trace && !tracing)
+		set_tracing_on();
+}
+
+static void trace_off(void)
+{
+	if (!trace && tracing)
+		set_tracing_off();
+}
+
+//////////////////////////////////////////////////
+// Tracing End
+//////////////////////////////////////////////////
 static int __skb_nsg(struct sk_buff *skb, int offset, int len,
                      unsigned int recursion_level)
 {
@@ -669,6 +740,7 @@ static int tls_push_record(struct sock *sk, int flags,
 	u32 i, split_point, uninitialized_var(orig_end);
 	struct sk_msg *msg_pl, *msg_en;
 	struct aead_request *req;
+	unsigned long lock_flags;
 	bool split;
 	int rc;
 
@@ -755,6 +827,15 @@ static int tls_push_record(struct sock *sk, int flags,
 
 	tls_ctx->pending_open_record_frags = false;
 
+	if (trace && !tracing)
+		trace_on();
+
+	if (tracing) {
+		preempt_disable(); 			// disable preemption on this core
+		raw_local_irq_save(lock_flags); 		// disable hard interrupts on this core
+		trace_start(&cycles_enc);
+	}
+
 	rc = tls_do_encryption(sk, tls_ctx, ctx, req,
 			       msg_pl->sg.size + prot->tail_size, i);
 	if (rc < 0) {
@@ -773,6 +854,16 @@ static int tls_push_record(struct sock *sk, int flags,
 		sk_msg_trim(sk, msg_en, msg_pl->sg.size + prot->overhead_size);
 		tls_ctx->pending_open_record_frags = true;
 		ctx->open_rec = tmp;
+	}
+
+	if (tracing) {
+		trace_end(&cycles_enc);
+		raw_local_irq_restore(lock_flags); 		// enable hard interrupts on this core
+		preempt_enable(); 			// enable preemption on this core
+	}
+	if (!trace && tracing) {
+		trace_off();
+		print_tracing();
 	}
 
 	return tls_tx_records(sk, flags);
@@ -1391,6 +1482,7 @@ static int decrypt_internal(struct sock *sk, struct sk_buff *skb,
 	struct scatterlist *sgout = NULL;
 	const int data_len = rxm->full_len - prot->overhead_size +
 			     prot->tail_size;
+	unsigned long lock_flags;
 	int iv_offset = 0;
 
 	if (*zc && (out_iov || out_sg)) {
@@ -1497,11 +1589,30 @@ fallback_to_reg_recv:
 		*zc = false;
 	}
 
+	if (trace && !tracing)
+		trace_on();
+
+	if (tracing) {
+		preempt_disable(); 			// disable preemption on this core
+		raw_local_irq_save(lock_flags); 		// disable hard interrupts on this core
+		trace_start(&cycles_dec);
+	}
 	/* Prepare and submit AEAD request */
 	err = tls_do_decryption(sk, skb, sgin, sgout, iv,
 				data_len, aead_req, async);
 	if (err == -EINPROGRESS)
 		return err;
+
+	if (tracing) {
+		trace_end(&cycles_dec);
+		raw_local_irq_restore(lock_flags); 		// enable hard interrupts on this core
+		preempt_enable(); 			// enable preemption on this core
+	}
+	if (!trace && tracing) {
+		trace_off();
+		print_tracing();
+	}
+
 
 	/* Release the pages in case iov was mapped to pages */
 	for (; pages > 0; pages--)
