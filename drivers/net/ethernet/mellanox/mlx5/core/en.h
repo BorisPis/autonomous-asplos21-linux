@@ -979,6 +979,7 @@ int mlx5e_redirect_rqt(struct mlx5e_priv *priv, u32 rqtn, int sz,
 void mlx5e_build_indir_tir_ctx_hash(struct mlx5e_rss_params *rss_params,
 				    const struct mlx5e_tirc_config *ttconfig,
 				    void *tirc, bool inner);
+void mlx5e_build_direct_tir_ctx(struct mlx5e_priv *priv, u32 rqtn, u32 *tirc);
 void mlx5e_modify_tirs_hash(struct mlx5e_priv *priv, void *in, int inlen);
 struct mlx5e_tirc_config mlx5e_tirc_get_default_config(enum mlx5e_traffic_types tt);
 

@@ -129,4 +129,14 @@ mlx5e_accel_handle_tx(struct sk_buff *skb,
 	return skb;
 }
 
+static inline int mlx5e_accel_sk_get_rxq(struct sock *sk)
+{
+	int rxq = sk_rx_queue_get(sk);
+
+	if (unlikely(rxq == -1))
+		rxq = 0;
+
+	return rxq;
+}
+
 #endif /* __MLX5E_EN_ACCEL_H__ */

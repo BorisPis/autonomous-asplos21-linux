@@ -629,6 +629,13 @@ void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 				break;
 			case MLX5E_ICOSQ_WQE_NOP:
 				break;
+#ifdef CONFIG_MLX5_EN_TLS
+			case MLX5E_ICOSQ_WQE_UMR_TLS:
+				break;
+			case MLX5E_ICOSQ_WQE_SET_PSV_TLS:
+				mlx5e_ktls_handle_ctx_completion(wi);
+				break;
+#endif
 			default:
 				netdev_WARN_ONCE(cq->channel->netdev,
 						 "Bad WQE type in ICOSQ WQE info: 0x%x\n",
@@ -977,7 +984,9 @@ static inline void mlx5e_build_rx_skb(struct mlx5_cqe64 *cqe,
 	skb->mac_len = ETH_HLEN;
 
 #ifdef CONFIG_MLX5_EN_TLS
-	mlx5e_tls_handle_rx_skb(netdev, skb, &cqe_bcnt);
+	/* TODO */
+	/*mlx5e_tls_handle_rx_skb(netdev, skb, &cqe_bcnt);*/
+	mlx5e_ktls_handle_rx_skb(netdev, cqe, skb);
 #endif
 
 	if (lro_num_seg > 1) {

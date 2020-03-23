@@ -3,6 +3,7 @@
 
 #ifdef CONFIG_MLX5_EN_TLS
 
+#include <net/tls.h>
 #include "en.h"
 #include "en/txrx.h"
 
@@ -14,6 +15,10 @@ struct sk_buff *mlx5e_ktls_handle_tx_skb(struct net_device *netdev,
 					 struct mlx5e_txqsq *sq,
 					 struct sk_buff *skb,
 					 struct mlx5e_tx_wqe **wqe, u16 *pi);
+void mlx5e_ktls_handle_rx_skb(struct net_device *netdev, struct mlx5_cqe64 *cqe,
+			      struct sk_buff *skb);
+
+void mlx5e_ktls_handle_ctx_completion(struct mlx5e_icosq_wqe_info *wi);
 
 void mlx5e_ktls_tx_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
 					   struct mlx5e_tx_wqe_info *wi,

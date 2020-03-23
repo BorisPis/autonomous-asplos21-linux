@@ -60,11 +60,14 @@ mlx5e_ktls_build_static_params(struct mlx5e_set_tls_static_params_wqe *wqe,
 {
 	struct mlx5_wqe_ctrl_seg     *cseg  = &wqe->ctrl;
 	struct mlx5_wqe_umr_ctrl_seg *ucseg = &wqe->uctrl;
+	u8 opmod = direction == TLS_OFFLOAD_CTX_DIR_TX ?
+		MLX5_OPC_MOD_TLS_TIS_STATIC_PARAMS :
+		MLX5_OPC_MOD_TLS_TIR_STATIC_PARAMS;
 
 #define STATIC_PARAMS_DS_CNT DIV_ROUND_UP(sizeof(*wqe), MLX5_SEND_WQE_DS)
 
 	cseg->opmod_idx_opcode = cpu_to_be32((pc << 8) | MLX5_OPCODE_UMR |
-					     (MLX5_OPC_MOD_TLS_TIS_STATIC_PARAMS << 24));
+					     (opmod << 24));
 	cseg->qpn_ds           = cpu_to_be32((sqn << MLX5_WQE_CTRL_QPN_SHIFT) |
 					     STATIC_PARAMS_DS_CNT);
 	cseg->fm_ce_se         = fence ? MLX5_FENCE_MODE_INITIATOR_SMALL : 0;
@@ -96,12 +99,14 @@ mlx5e_ktls_build_progress_params(struct mlx5e_set_tls_progress_params_wqe *wqe,
 				 enum tls_offload_ctx_dir direction)
 {
 	struct mlx5_wqe_ctrl_seg *cseg = &wqe->ctrl;
+	u8 opmod = direction == TLS_OFFLOAD_CTX_DIR_TX ?
+		MLX5_OPC_MOD_TLS_TIS_PROGRESS_PARAMS :
+		MLX5_OPC_MOD_TLS_TIR_PROGRESS_PARAMS;
 
 #define PROGRESS_PARAMS_DS_CNT DIV_ROUND_UP(sizeof(*wqe), MLX5_SEND_WQE_DS)
 
 	cseg->opmod_idx_opcode =
-		cpu_to_be32((pc << 8) | MLX5_OPCODE_SET_PSV |
-			    (MLX5_OPC_MOD_TLS_TIS_PROGRESS_PARAMS << 24));
+		cpu_to_be32((pc << 8) | MLX5_OPCODE_SET_PSV | (opmod << 24));
 	cseg->qpn_ds           = cpu_to_be32((sqn << MLX5_WQE_CTRL_QPN_SHIFT) |
 					     PROGRESS_PARAMS_DS_CNT);
 	cseg->fm_ce_se         = fence ? MLX5_FENCE_MODE_INITIATOR_SMALL : 0;
