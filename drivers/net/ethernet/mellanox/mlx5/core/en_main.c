@@ -1132,7 +1132,7 @@ static int mlx5e_alloc_txqsq(struct mlx5e_channel *c,
 #ifdef CONFIG_MLX5_EN_TLS
 	if (mlx5_accel_is_tls_device(c->priv->mdev)) {
 		set_bit(MLX5E_SQ_STATE_TLS, &sq->state);
-		sq->stop_room += MLX5E_SQ_TLS_ROOM +
+		sq->stop_room += mlx5e_ktls_get_sq_room() +
 			mlx5e_ktls_dumps_num_wqebbs(sq, MAX_SKB_FRAGS,
 						    TLS_MAX_PAYLOAD_SIZE);
 	}
