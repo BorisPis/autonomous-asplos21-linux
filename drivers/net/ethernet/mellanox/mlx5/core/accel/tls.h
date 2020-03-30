@@ -38,6 +38,19 @@
 #include <linux/tls.h>
 
 #ifdef CONFIG_MLX5_TLS
+
+enum {
+	MLX5_TLS_PROGRESS_PARAMS_AUTH_STATE_NO_OFFLOAD     = 0,
+	MLX5_TLS_PROGRESS_PARAMS_AUTH_STATE_OFFLOAD        = 1,
+	MLX5_TLS_PROGRESS_PARAMS_AUTH_STATE_AUTHENTICATION = 2,
+};
+
+enum {
+	MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_START     = 0,
+	MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_TRACKING  = 1,
+	MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_SEARCHING = 2,
+};
+
 int mlx5_ktls_create_key(struct mlx5_core_dev *mdev,
 			 struct tls_crypto_info *crypto_info,
 			 u32 *p_key_id);

@@ -77,9 +77,9 @@ fill_progress_params_ctx(void *ctx, struct mlx5e_ktls_offload_context_tx *priv_t
 {
 	MLX5_SET(tls_progress_params, ctx, tisn, priv_tx->tisn);
 	MLX5_SET(tls_progress_params, ctx, record_tracker_state,
-		 MLX5E_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_START);
+		 MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_START);
 	MLX5_SET(tls_progress_params, ctx, auth_state,
-		 MLX5E_TLS_PROGRESS_PARAMS_AUTH_STATE_NO_OFFLOAD);
+		 MLX5_TLS_PROGRESS_PARAMS_AUTH_STATE_NO_OFFLOAD);
 }
 
 static void
