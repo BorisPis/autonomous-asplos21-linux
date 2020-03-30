@@ -986,7 +986,7 @@ static inline void mlx5e_build_rx_skb(struct mlx5_cqe64 *cqe,
 #ifdef CONFIG_MLX5_EN_TLS
 	/* TODO */
 	/*mlx5e_tls_handle_rx_skb(netdev, skb, &cqe_bcnt);*/
-	mlx5e_ktls_handle_rx_skb(netdev, cqe, skb);
+	mlx5e_ktls_handle_rx_skb(rq, cqe, cqe_bcnt, skb);
 #endif
 
 	if (lro_num_seg > 1) {

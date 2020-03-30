@@ -181,6 +181,13 @@ mlx5e_get_ktls_rx_priv_ctx(struct tls_context *tls_ctx)
 	return *ctx;
 }
 
+static struct mlx5e_rq_stats *
+ktls_get_rq_stats(struct mlx5e_priv *priv, int rxq)
+{
+	struct mlx5e_channel *c = priv->channels.c[rxq];
+
+	return c->rq.stats;
+}
 
 int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 			  struct tls_crypto_info *crypto_info, u32 key_id,
@@ -210,6 +217,7 @@ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 	/* TODO: extract direct rqtn from socket */
 	rqtn = priv->direct_tir[rxq].rqt.rqtn;
 
+	ktls_get_rq_stats(priv, rxq)->tls_ctx++;
 	/* TODO
 	stats->tls_ctx++;*/
 	err = mlx5e_ktls_create_tir(priv, &rx_priv->tirn, rqtn);
@@ -217,7 +225,7 @@ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 		goto fail;
 
 	accel_rule_init(&rx_priv->rule, priv, sk);
-	mlx5e_ktls_rx_post_param_wqes(/*TODO*/priv->channels.c[rxq], rx_priv);
+	mlx5e_ktls_rx_post_param_wqes(priv->channels.c[rxq], rx_priv);
 
 	return 0;
 
@@ -235,6 +243,8 @@ void mlx5e_ktls_del_rx(struct net_device *netdev,
 	struct mlx5e_ktls_offload_context_rx *rx_priv =
 		mlx5e_get_ktls_rx_priv_ctx(tls_ctx);
 
+	/* TODO
+	ktls_get_rq_stats(priv, rxq)->tls_del++; */
 	if (!rx_priv->rule.rule)
 		return;
 
@@ -246,16 +256,20 @@ void mlx5e_ktls_del_rx(struct net_device *netdev,
 }
 
 
-void mlx5e_ktls_handle_rx_skb(struct net_device *netdev, struct mlx5_cqe64 *cqe,
-			      struct sk_buff *skb)
+void mlx5e_ktls_handle_rx_skb(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
+			      u32 cqe_bcnt, struct sk_buff *skb)
 {
 	u8 tls_offload = get_cqe_tls_offload(cqe);
 
 	switch (tls_offload) {
 	case CQE_TLS_OFFLOAD_DECRYPTED:
 		skb->decrypted = 1;
+		rq->stats->tls_decrypted_packets++;
+		rq->stats->tls_decrypted_bytes += cqe_bcnt;
 		break;
 	case CQE_TLS_OFFLOAD_RESYNC:
+		rq->stats->tls_ooo++;
+		break;
 	case CQE_TLS_OFFLOAD_ERROR:
 		/* TODO */
 		break;
