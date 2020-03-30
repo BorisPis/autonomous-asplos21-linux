@@ -635,6 +635,9 @@ void mlx5e_poll_ico_cq(struct mlx5e_cq *cq)
 			case MLX5E_ICOSQ_WQE_SET_PSV_TLS:
 				mlx5e_ktls_handle_ctx_completion(wi);
 				break;
+			case MLX5E_ICOSQ_WQE_GET_PSV_TLS:
+				mlx5e_ktls_handle_get_psv_completion(wi, sq);
+				break;
 #endif
 			default:
 				netdev_WARN_ONCE(cq->channel->netdev,

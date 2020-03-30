@@ -18,6 +18,7 @@ enum mlx5e_icosq_wqe_type {
 #ifdef CONFIG_MLX5_EN_TLS
 	MLX5E_ICOSQ_WQE_UMR_TLS,
 	MLX5E_ICOSQ_WQE_SET_PSV_TLS,
+	MLX5E_ICOSQ_WQE_GET_PSV_TLS,
 #endif
 };
 

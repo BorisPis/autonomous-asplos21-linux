@@ -19,6 +19,8 @@ void mlx5e_ktls_handle_rx_skb(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
 			      u32 cqe_bcnt, struct sk_buff *skb);
 
 void mlx5e_ktls_handle_ctx_completion(struct mlx5e_icosq_wqe_info *wi);
+void mlx5e_ktls_handle_get_psv_completion(struct mlx5e_icosq_wqe_info *wi,
+					  struct mlx5e_icosq *sq);
 
 void mlx5e_ktls_tx_handle_resync_dump_comp(struct mlx5e_txqsq *sq,
 					   struct mlx5e_tx_wqe_info *wi,

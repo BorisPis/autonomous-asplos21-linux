@@ -2,6 +2,7 @@
 // Copyright (c) 2019 Mellanox Technologies.
 
 #include <linux/tls.h>
+#include <net/inet6_hashtables.h>
 #include "en.h"
 #include "en/txrx.h"
 #include "en_accel/en_accel.h"
@@ -20,6 +21,24 @@ struct accel_rule {
 	/*struct arfs_tuple	tuple;*/
 };
 
+#define PROGRESS_PARAMS_WRITE_UNIT	(64)
+#define PROGRESS_PARAMS_PADDED_SIZE	\
+		(ALIGN(sizeof(struct mlx5_seg_tls_progress_params), \
+		       PROGRESS_PARAMS_WRITE_UNIT))
+
+struct mlx5e_ktls_rx_resync_ctx {
+	struct work_struct work;
+	struct mlx5e_priv *priv;
+
+	u32 hw_seq;
+	u32 sw_seq;
+	__be64 sw_rcd_sn_be;
+
+	union {
+		struct mlx5_seg_tls_progress_params progress;
+		u8 pad[PROGRESS_PARAMS_PADDED_SIZE];
+	} ____cacheline_aligned_in_smp;
+};
 
 struct mlx5e_ktls_offload_context_rx {
 	struct tls12_crypto_info_aes_gcm_128 crypto_info;
@@ -27,6 +46,9 @@ struct mlx5e_ktls_offload_context_rx {
 	struct tls_offload_context_rx *rx_ctx;
 	u32 tirn;
 	u32 key_id;
+	u32 rxq;
+	/* get psv */
+	struct mlx5e_ktls_rx_resync_ctx resync;
 };
 
 static int mlx5e_ktls_create_tir(struct mlx5e_priv *priv, u32 *tirn, u32 rqtn)
@@ -103,7 +125,8 @@ post_static_params(struct mlx5e_icosq *sq,
 
 	wqe = mlx5e_icosq_fetch_wqe(sq, sizeof(*wqe), &pi);
 	mlx5e_ktls_build_static_params(wqe, sq->pc, sq->sqn, &priv_rx->crypto_info,
-				       priv_rx->tirn, priv_rx->key_id, false,
+				       priv_rx->tirn, priv_rx->key_id,
+				       priv_rx->resync.hw_seq, false,
 				       TLS_OFFLOAD_CTX_DIR_RX);
 	icosq_fill_wi(sq, pi, MLX5E_ICOSQ_WQE_UMR_TLS, MLX5E_KTLS_STATIC_WQEBBS,
 		      priv_rx);
@@ -127,6 +150,87 @@ post_progress_params(struct mlx5e_icosq *sq,
 	sq->pc += MLX5E_KTLS_SET_PROGRESS_WQEBBS;
 
 	return &wqe->ctrl;
+}
+
+static struct mlx5e_get_psv_wqe *
+post_get_progress_params(struct mlx5e_icosq *sq,
+			 struct mlx5e_ktls_offload_context_rx *priv_rx)
+{
+	struct mlx5_wqe_ctrl_seg *cseg;
+	struct mlx5e_get_psv_wqe *wqe;
+	struct mlx5_seg_get_psv *psv;
+	struct device *pdev;
+	dma_addr_t dma_addr;
+	u16 pi;
+
+	pdev = sq->channel->pdev;
+
+	dma_addr = dma_map_single(pdev, &priv_rx->resync.progress,
+				  PROGRESS_PARAMS_PADDED_SIZE,
+				  DMA_FROM_DEVICE);
+	if (unlikely(dma_mapping_error(pdev, dma_addr)))
+		return NULL;
+
+	wqe = mlx5e_icosq_fetch_wqe(sq, sizeof(*wqe), &pi);
+
+#define GET_PSV_DS_CNT (DIV_ROUND_UP(sizeof(*wqe), MLX5_SEND_WQE_DS))
+
+	cseg = &wqe->ctrl;
+	cseg->opmod_idx_opcode =
+		cpu_to_be32((sq->pc << 8) | MLX5_OPCODE_GET_PSV |
+			    (MLX5_OPC_MOD_TLS_TIR_PROGRESS_PARAMS << 24));
+	cseg->qpn_ds =
+		cpu_to_be32((sq->sqn << MLX5_WQE_CTRL_QPN_SHIFT) | GET_PSV_DS_CNT);
+
+	psv = &wqe->psv;
+	psv->num_psv      = 1 << 4;
+	psv->l_key        = sq->channel->mkey_be;
+	psv->psv_index[0] = cpu_to_be32(priv_rx->tirn);
+	psv->va           = cpu_to_be64(dma_addr);
+
+	icosq_fill_wi(sq, pi, MLX5E_ICOSQ_WQE_GET_PSV_TLS, 1 /* TODO use macro? */,
+		      priv_rx);
+	sq->pc++;
+
+	return wqe;
+}
+
+void
+mlx5e_ktls_rx_post_get_psv(struct mlx5e_priv *priv,
+			   struct mlx5e_ktls_offload_context_rx *priv_rx)
+{
+	struct mlx5e_get_psv_wqe *wqe;
+	struct mlx5e_icosq *sq;
+	struct mlx5_wq_cyc *wq;
+	struct mlx5e_channel *c = priv->channels.c[priv_rx->rxq];
+
+	sq = &c->async_icosq;
+	wq = &sq->wq;
+
+	spin_lock(&c->async_icosq_lock);
+
+	wqe = post_get_progress_params(sq, priv_rx);
+	if (likely(wqe))
+		mlx5e_notify_hw(wq, sq->pc, sq->uar_map, &wqe->ctrl);
+
+	spin_unlock(&c->async_icosq_lock);
+}
+
+static void accel_handle_resync_work(struct work_struct *work)
+{
+	struct mlx5e_ktls_rx_resync_ctx *resync =
+		container_of(work, struct mlx5e_ktls_rx_resync_ctx, work);
+	struct mlx5e_ktls_offload_context_rx *priv_rx =
+		container_of(resync, struct mlx5e_ktls_offload_context_rx, resync);
+
+	mlx5e_ktls_rx_post_get_psv(resync->priv, priv_rx);
+}
+
+void mlx5e_accel_rx_resync_init(struct mlx5e_ktls_rx_resync_ctx *resync,
+				struct mlx5e_priv *priv)
+{
+	INIT_WORK(&resync->work, accel_handle_resync_work);
+	resync->priv = priv;
 }
 
 static void
@@ -206,6 +310,7 @@ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 		goto fail;
 	}
 
+	rx_priv->rxq          = rxq;
 	rx_priv->key_id       = key_id;
 	rx_priv->crypto_info  =
 		*(struct tls12_crypto_info_aes_gcm_128 *)crypto_info;
@@ -225,6 +330,7 @@ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 		goto fail;
 
 	accel_rule_init(&rx_priv->rule, priv, sk);
+	mlx5e_accel_rx_resync_init(&rx_priv->resync, priv);
 	mlx5e_ktls_rx_post_param_wqes(priv->channels.c[rxq], rx_priv);
 
 	return 0;
@@ -255,6 +361,108 @@ void mlx5e_ktls_del_rx(struct net_device *netdev,
 	kvfree(rx_priv);
 }
 
+static void handle_seq_match(struct mlx5e_ktls_offload_context_rx *priv_rx,
+			     struct mlx5e_icosq *sq)
+{
+	struct tls12_crypto_info_aes_gcm_128 *info = &priv_rx->crypto_info;
+	u8 *ctx = priv_rx->resync.progress.ctx;
+
+	u16 contig_wqebbs_room, pi;
+	struct mlx5_wqe_ctrl_seg *cseg;
+	struct mlx5_wq_cyc *wq;
+
+	u8 tracker_state = MLX5_GET(tls_progress_params, ctx, record_tracker_state);
+	u8 auth_state = MLX5_GET(tls_progress_params, ctx, auth_state);
+
+	if (tracker_state != MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_TRACKING ||
+	    auth_state != MLX5_TLS_PROGRESS_PARAMS_AUTH_STATE_NO_OFFLOAD)
+		return;
+
+	memcpy(info->rec_seq, &priv_rx->resync.sw_rcd_sn_be, sizeof(info->rec_seq));
+
+	wq = &sq->wq;
+
+	pi = mlx5_wq_cyc_ctr2ix(wq, sq->pc);
+	contig_wqebbs_room = mlx5_wq_cyc_get_contig_wqebbs(wq, pi);
+	if (unlikely(contig_wqebbs_room <
+		     MLX5E_KTLS_STATIC_WQEBBS + MLX5E_KTLS_SET_PROGRESS_WQEBBS))
+		mlx5e_fill_icosq_frag_edge(sq, wq, pi, contig_wqebbs_room);
+
+	cseg = post_static_params(sq, priv_rx);
+	mlx5e_notify_hw(wq, sq->pc, sq->uar_map, cseg);
+
+}
+
+void mlx5e_ktls_handle_get_psv_completion(struct mlx5e_icosq_wqe_info *wi,
+					  struct mlx5e_icosq *sq)
+{
+	struct mlx5e_ktls_offload_context_rx *priv_rx = wi->accel.priv_rx;
+	struct mlx5_seg_tls_progress_params *progress = &priv_rx->resync.progress;
+	u8 *ctx = progress->ctx;
+
+	print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_OFFSET, 16, 1,
+		       progress, sizeof(*progress), false);
+	priv_rx->resync.hw_seq = MLX5_GET(tls_progress_params, ctx, hw_resync_tcp_sn);
+	if (priv_rx->resync.hw_seq == priv_rx->resync.sw_seq)
+		handle_seq_match(priv_rx, sq);
+}
+
+static void queue_get_psv(struct net_device *netdev, struct sock *sk)
+{
+	struct tls_context *tls_ctx = tls_get_ctx(sk);
+	struct mlx5e_ktls_offload_context_rx *rx_priv =
+		mlx5e_get_ktls_rx_priv_ctx(tls_ctx);
+	struct mlx5e_ktls_rx_resync_ctx *resync = &rx_priv->resync;
+	struct mlx5e_priv *priv = netdev_priv(netdev);
+
+	queue_work(priv->wq /* TODO Use separate TLS queue? */ , &resync->work);
+}
+
+static int ktls_update_resync_sn(struct net_device *netdev,
+				 struct sk_buff *skb)
+{
+	struct ethhdr *eth = (struct ethhdr *)(skb->data);
+	struct sock *sk = NULL;
+	int network_depth = 0;
+	struct iphdr *iph;
+	struct tcphdr *th;
+
+	__vlan_get_protocol(skb, eth->h_proto, &network_depth);
+	iph = (struct iphdr *)(skb->data + network_depth);
+
+	if (iph->version == 4) {
+		th = (void *)iph + sizeof(struct iphdr);
+
+		sk = inet_lookup_established(dev_net(netdev), &tcp_hashinfo,
+					     iph->saddr, th->source, iph->daddr,
+					     th->dest, netdev->ifindex);
+#if IS_ENABLED(CONFIG_IPV6)
+	} else {
+		struct ipv6hdr *ipv6h = (struct ipv6hdr *)iph;
+
+		th = (void *)ipv6h + sizeof(struct ipv6hdr);
+
+		sk = __inet6_lookup_established(dev_net(netdev), &tcp_hashinfo,
+						&ipv6h->saddr, th->source,
+						&ipv6h->daddr, ntohs(th->dest),
+						netdev->ifindex, 0);
+#endif
+	}
+
+	if (unlikely(!sk || sk->sk_state == TCP_TIME_WAIT))
+		goto out;
+
+	/* TODO move? */
+	queue_get_psv(netdev, sk);
+
+	skb->sk = sk;
+	skb->destructor = sock_edemux;
+
+	tls_offload_rx_resync_request(sk, 0, true);
+
+out:
+	return 0;
+}
 
 void mlx5e_ktls_handle_rx_skb(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
 			      u32 cqe_bcnt, struct sk_buff *skb)
@@ -268,6 +476,7 @@ void mlx5e_ktls_handle_rx_skb(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe,
 		rq->stats->tls_decrypted_bytes += cqe_bcnt;
 		break;
 	case CQE_TLS_OFFLOAD_RESYNC:
+		ktls_update_resync_sn(rq->netdev, skb);
 		rq->stats->tls_ooo++;
 		break;
 	case CQE_TLS_OFFLOAD_ERROR:
@@ -289,7 +498,29 @@ void mlx5e_ktls_handle_ctx_completion(struct mlx5e_icosq_wqe_info *wi)
 int mlx5e_ktls_rx_resync(struct net_device *netdev, struct sock *sk,
 			 u32 seq, u8 *rcd_sn)
 {
-	/* TODO */
-	return -EINVAL;
-}
+	struct tls_context *tls_ctx = tls_get_ctx(sk);
+	struct mlx5e_ktls_offload_context_rx *rx_priv =
+		mlx5e_get_ktls_rx_priv_ctx(tls_ctx);
+	struct mlx5e_ktls_rx_resync_ctx *resync = &rx_priv->resync;
 
+	resync->sw_rcd_sn_be = *(__be64 *)rcd_sn;
+	resync->sw_seq       = seq - (TLS_HEADER_SIZE - 1);
+
+	if (resync->hw_seq == resync->sw_seq) {
+		struct mlx5e_priv *priv = netdev_priv(netdev);
+		int rxq = mlx5e_accel_sk_get_rxq(sk);
+		struct mlx5e_channel *c = priv->channels.c[rxq];
+		struct mlx5e_icosq *sq;
+
+		sq = &c->async_icosq;
+
+		spin_lock(&c->async_icosq_lock);
+
+		handle_seq_match(rx_priv, sq);
+		spin_unlock(&c->async_icosq_lock);
+	} else {
+		tls_offload_rx_resync_request(sk, seq, true);
+	}
+
+	return 0;
+}

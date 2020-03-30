@@ -170,7 +170,7 @@ post_static_params(struct mlx5e_txqsq *sq,
 
 	wqe = mlx5e_sq_fetch_wqe(sq, sizeof(*wqe), &pi);
 	mlx5e_ktls_build_static_params(wqe, sq->pc, sq->sqn, &priv_tx->crypto_info,
-				       priv_tx->tisn, priv_tx->key_id, fence,
+				       priv_tx->tisn, priv_tx->key_id, 0, fence,
 				       TLS_OFFLOAD_CTX_DIR_TX);
 	tx_fill_wi(sq, pi, MLX5E_KTLS_STATIC_WQEBBS, 0, NULL);
 	sq->pc += MLX5E_KTLS_STATIC_WQEBBS;
