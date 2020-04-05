@@ -47,6 +47,7 @@
 #define DRIVER_VERSION "5.0-0"
 
 extern uint mlx5_core_debug_mask;
+extern uint mlx5_drop_prob;
 
 #define mlx5_core_dbg(__dev, format, ...)				\
 	dev_dbg((__dev)->device, "%s:%d:(pid %d): " format,		\

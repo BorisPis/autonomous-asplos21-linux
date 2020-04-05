@@ -1158,6 +1158,15 @@ void mlx5e_handle_rx_cqe(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe)
 	wi       = get_frag(rq, ci);
 	cqe_bcnt = be32_to_cpu(cqe->byte_cnt);
 
+	if (mlx5_drop_prob) {
+		u32 rand, drop_count;
+
+		rand = get_cycles();
+		drop_count = rand % mlx5_drop_prob;
+		if (1 == drop_count)
+			goto free_wqe;
+	}
+
 	if (unlikely(MLX5E_RX_ERR_CQE(cqe))) {
 		trigger_report(rq, cqe);
 		rq->stats->wqe_err++;
@@ -1409,6 +1418,15 @@ void mlx5e_handle_rx_cqe_mpwrq(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe)
 	u16 cqe_bcnt;
 
 	wi->consumed_strides += cstrides;
+
+	if (mlx5_drop_prob) {
+		u32 rand, drop_count;
+
+		rand = get_cycles();
+		drop_count = rand % mlx5_drop_prob;
+		if (1 == drop_count)
+			goto mpwrq_cqe_out;
+	}
 
 	if (unlikely(MLX5E_RX_ERR_CQE(cqe))) {
 		trigger_report(rq, cqe);

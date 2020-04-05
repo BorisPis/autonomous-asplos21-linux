@@ -86,6 +86,10 @@ static unsigned int prof_sel = MLX5_DEFAULT_PROF;
 module_param_named(prof_sel, prof_sel, uint, 0444);
 MODULE_PARM_DESC(prof_sel, "profile selector. Valid range 0 - 2");
 
+unsigned int mlx5_drop_prob = 0;
+module_param_named(mlx5_drop_prob, mlx5_drop_prob, uint, 0644);
+MODULE_PARM_DESC(mlx5_drop_prob, "probability to drop a packet on rx is 1/mlx5_drop_prob");
+
 static u32 sw_owner_id[4];
 
 enum {
