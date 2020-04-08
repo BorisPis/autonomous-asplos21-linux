@@ -36,6 +36,7 @@
 
 #include <linux/skbuff.h>
 #include <linux/netdevice.h>
+#include <net/geneve.h>
 #include "en_accel/ipsec_rxtx.h"
 #include "en_accel/tls_rxtx.h"
 #include "en.h"
