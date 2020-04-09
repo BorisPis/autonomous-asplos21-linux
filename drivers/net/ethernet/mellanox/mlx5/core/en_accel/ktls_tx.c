@@ -380,8 +380,6 @@ mlx5e_ktls_tx_handle_ooo(struct mlx5e_ktls_offload_context_tx *priv_tx,
 	struct mlx5_wq_cyc *wq = &sq->wq;
 	enum mlx5e_ktls_sync_retval ret;
 	struct tx_sync_info info = {};
-	u16 contig_wqebbs_room, pi;
-	u8 num_wqebbs;
 	int i = 0;
 
 	ret = tx_sync_info_get(priv_tx, seq, datalen, &info);
@@ -409,13 +407,6 @@ mlx5e_ktls_tx_handle_ooo(struct mlx5e_ktls_offload_context_tx *priv_tx,
 		tx_post_fence_nop(sq);
 		return MLX5E_KTLS_SYNC_DONE;
 	}
-
-	num_wqebbs = mlx5e_ktls_dumps_num_wqebbs(sq, info.nr_frags, info.sync_len);
-	pi = mlx5_wq_cyc_ctr2ix(wq, sq->pc);
-	contig_wqebbs_room = mlx5_wq_cyc_get_contig_wqebbs(wq, pi);
-
-	if (unlikely(contig_wqebbs_room < num_wqebbs))
-		mlx5e_fill_sq_frag_edge(sq, wq, pi, contig_wqebbs_room);
 
 	for (; i < info.nr_frags; i++) {
 		unsigned int orig_fsz, frag_offset = 0, n = 0;
