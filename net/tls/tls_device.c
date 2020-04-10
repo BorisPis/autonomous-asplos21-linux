@@ -40,6 +40,13 @@
 
 #include "trace.h"
 
+int rx_decrypted;
+module_param_named(rx_decrypted, rx_decrypted, int, 0444);
+int rx_encrypted;
+module_param_named(rx_encrypted, rx_encrypted, int, 0444);
+int rx_encrypted_full;
+module_param_named(rx_encrypted_full, rx_encrypted_full, int, 0444);
+
 /* device_offload_lock is used to synchronize tls_dev_add
  * against NETDEV_DOWN notifications.
  */
@@ -902,13 +909,15 @@ int tls_device_decrypted(struct sock *sk, struct tls_context *tls_ctx,
 	 */
 	if (is_decrypted) {
 		ctx->resync_nh_reset = 1;
+		rx_decrypted++;
 		return 0;
 	}
 	if (is_encrypted) {
+		rx_encrypted_full++;
 		tls_device_core_ctrl_rx_resync(tls_ctx, ctx, sk, skb);
 		return 0;
 	}
-
+	rx_encrypted++;
 	ctx->resync_nh_reset = 1;
 	return tls_device_reencrypt(sk, skb);
 }
