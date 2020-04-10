@@ -412,8 +412,8 @@ void mlx5e_ktls_handle_get_psv_completion(struct mlx5e_icosq_wqe_info *wi,
 	struct mlx5_seg_tls_progress_params *progress = &priv_rx->resync.progress;
 	u8 *ctx = progress->ctx;
 
-	print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_OFFSET, 16, 1,
-		       progress, sizeof(*progress), false);
+	//print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_OFFSET, 16, 1,
+	//	       progress, sizeof(*progress), false);
 	priv_rx->resync.hw_seq = MLX5_GET(tls_progress_params, ctx, hw_resync_tcp_sn);
 	if (priv_rx->resync.hw_seq == priv_rx->resync.sw_seq)
 		handle_seq_match(priv_rx, sq);
