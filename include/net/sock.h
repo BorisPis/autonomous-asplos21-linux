@@ -527,6 +527,11 @@ enum sk_pacing {
 	SK_PACING_FQ		= 2,
 };
 
+enum sk_user_data_type {
+	SK_USER_DATA_TYPE_PSOCK      = 0,
+	SK_USER_DATA_TYPE_NVME_TCP   = 1,
+};
+
 /* Pointer stored in sk_user_data might not be suitable for copying
  * when cloning the socket. For instance, it can point to a reference
  * counted object. sk_user_data bottom bit is set if pointer must not
