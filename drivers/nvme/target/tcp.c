@@ -11,11 +11,17 @@
 #include <linux/nvme-tcp.h>
 #include <net/sock.h>
 #include <net/tcp.h>
+#include <net/tls.h>
+#include <uapi/linux/tls.h>
 #include <linux/inet.h>
 #include <linux/llist.h>
 #include <crypto/hash.h>
 
 #include "nvmet.h"
+
+static unsigned int nvmeotcp_tls_tx;
+module_param(nvmeotcp_tls_tx, uint, 0644);
+MODULE_PARM_DESC(nvmeotcp_tls_tx, "NVMEoTCP TLS_TX.");
 
 static unsigned int nvmeotcp_zerocopy;
 module_param(nvmeotcp_zerocopy, uint, 0644);
@@ -312,6 +318,7 @@ static void nvmet_tcp_map_pdu_iovec(struct nvmet_tcp_cmd *cmd)
 
 static void nvmet_tcp_fatal_error(struct nvmet_tcp_queue *queue)
 {
+	dump_stack();
 	queue->rcv_state = NVMET_TCP_RECV_ERR;
 	if (queue->nvme_sq.ctrl)
 		nvmet_ctrl_fatal_error(queue->nvme_sq.ctrl);
@@ -574,8 +581,8 @@ static int nvmet_try_send_response(struct nvmet_tcp_cmd *cmd,
 
 	if (!last_in_batch && cmd->queue->send_list_len)
 		flags |= MSG_MORE;
-	else
-		flags |= MSG_EOR;
+	//else
+	//	flags |= MSG_EOR;
 
 	ret = kernel_sendpage(cmd->queue->sock, virt_to_page(cmd->rsp_pdu),
 		offset_in_page(cmd->rsp_pdu) + cmd->offset, left, flags);
@@ -603,8 +610,8 @@ static int nvmet_try_send_r2t(struct nvmet_tcp_cmd *cmd, bool last_in_batch)
 
 	if (!last_in_batch && cmd->queue->send_list_len)
 		flags |= MSG_MORE;
-	else
-		flags |= MSG_EOR;
+	//else
+	//	flags |= MSG_EOR;
 
 	ret = kernel_sendpage(cmd->queue->sock, virt_to_page(cmd->r2t_pdu),
 		offset_in_page(cmd->r2t_pdu) + cmd->offset, left, flags);
@@ -804,6 +811,29 @@ static int nvmet_tcp_handle_icreq(struct nvmet_tcp_queue *queue)
 	ret = kernel_sendmsg(queue->sock, &msg, &iov, 1, iov.iov_len);
 	if (ret < 0)
 		goto free_crypto;
+
+	 /* Setup TLS ULP */
+	ret = kernel_setsockopt(queue->sock, IPPROTO_TCP, TCP_ULP,
+				"tls", sizeof("tls"));
+	if (ret != 0) {
+		pr_err("%s failure setting TCP_ULP %d\n", __func__, ret);
+	}
+
+	/* Setup TLS for receive */
+	if (nvmeotcp_tls_tx) {
+		struct tls12_crypto_info_aes_gcm_128 tls12;
+
+		memset(&tls12, 0, sizeof(tls12));
+		tls12.info.version = TLS_1_2_VERSION;
+		tls12.info.cipher_type = TLS_CIPHER_AES_GCM_128;
+		ret = kernel_setsockopt(queue->sock, SOL_TLS, TLS_TX,
+				(char *)&tls12, sizeof(tls12));
+		if (ret) {
+			pr_err("%s failed to set TLS_TX sock opt %d\n", __func__, ret);
+			return ret;
+		}
+		pr_err("TLS TX ready\n");
+	}
 
 	queue->state = NVMET_TCP_Q_LIVE;
 	nvmet_prepare_receive_pdu(queue);
@@ -1181,6 +1211,7 @@ static void nvmet_tcp_io_work(struct work_struct *w)
 		if (ret > 0) {
 			pending = true;
 		} else if (ret < 0) {
+			pr_err("%s rcv error=%d\n", __func__, ret);
 			if (ret == -EPIPE || ret == -ECONNRESET)
 				kernel_sock_shutdown(queue->sock, SHUT_RDWR);
 			else
@@ -1193,6 +1224,7 @@ static void nvmet_tcp_io_work(struct work_struct *w)
 			/* transmitted message/data */
 			pending = true;
 		} else if (ret < 0) {
+			pr_err("%s snd error=%d\n", __func__, ret);
 			if (ret == -EPIPE || ret == -ECONNRESET)
 				kernel_sock_shutdown(queue->sock, SHUT_RDWR);
 			else

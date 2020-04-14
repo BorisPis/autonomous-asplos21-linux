@@ -11,6 +11,8 @@
 #include <linux/nvme-tcp.h>
 #include <net/sock.h>
 #include <net/tcp.h>
+#include <net/tls.h>
+#include <uapi/linux/tls.h>
 #include <linux/blk-mq.h>
 #include <crypto/hash.h>
 #include <net/busy_poll.h>
@@ -19,6 +21,10 @@
 #include "fabrics.h"
 
 #include <linux/cpu_profile.h>
+
+static unsigned int nvmeotcp_tls_rx;
+module_param(nvmeotcp_tls_rx, uint, 0644);
+MODULE_PARM_DESC(nvmeotcp_tls_rx, "NVMEoTCP TLS_RX.");
 
 static unsigned int nvmeotcp_req;
 module_param(nvmeotcp_req, uint, 0644);
@@ -194,6 +200,7 @@ enum nvme_tcp_recv_state {
 
 struct nvme_tcp_ctrl;
 struct nvme_tcp_queue {
+	enum sk_user_data_type  type;
 	struct socket		*sock;
 	struct work_struct	io_work;
 	int			io_cpu;
@@ -220,6 +227,7 @@ struct nvme_tcp_queue {
 
 	bool			hdr_digest;
 	bool			data_digest;
+	bool                    tls_rx;
 	struct ahash_request	*rcv_hash;
 	struct ahash_request	*snd_hash;
 	__le32			exp_ddgst;
@@ -1774,6 +1782,7 @@ static int nvme_tcp_alloc_queue(struct nvme_ctrl *nctrl,
 	struct linger sol = { .l_onoff = 1, .l_linger = 0 };
 	int ret, opt, rcv_pdu_size, n;
 
+	queue->type = SK_USER_DATA_TYPE_NVME_TCP;
 	queue->ctrl = ctrl;
 	INIT_LIST_HEAD(&queue->send_list);
 	spin_lock_init(&queue->lock);
@@ -1914,6 +1923,32 @@ static int nvme_tcp_alloc_queue(struct nvme_ctrl *nctrl,
 	queue->sock->sk->sk_ll_usec = 1;
 #endif
 	write_unlock_bh(&queue->sock->sk->sk_callback_lock);
+
+	/* Setup TLS ULP */
+	ret = kernel_setsockopt(queue->sock, IPPROTO_TCP, TCP_ULP,
+				"tls", sizeof("tls"));
+	if (ret != 0) {
+		dev_err(nctrl->device,
+			"failure setting TCP_ULP %d\n", ret);
+	}
+
+	/* Setup TLS for receive */
+	if (nvmeotcp_tls_rx) {
+		struct tls12_crypto_info_aes_gcm_128 tls12;
+
+		memset(&tls12, 0, sizeof(tls12));
+		tls12.info.version = TLS_1_2_VERSION;
+		tls12.info.cipher_type = TLS_CIPHER_AES_GCM_128;
+		ret = kernel_setsockopt(queue->sock, SOL_TLS, TLS_RX,
+				(char *)&tls12, sizeof(tls12));
+		if (ret) {
+			dev_err(nctrl->device,
+				"failed to set TLS_RX sock opt %d\n", ret);
+			goto err_init_connect;
+		}
+		queue->tls_rx = true;
+		pr_err("TLS RX ready\n");
+	}
 
 	return 0;
 
