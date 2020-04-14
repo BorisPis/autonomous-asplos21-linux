@@ -563,10 +563,9 @@ out:
 	return rc;
 }
 
-int tls_device_sendpage(struct sock *sk, struct page *page,
-			int offset, size_t size, int flags)
+int tls_device_do_sendpage(struct sock *sk, struct page *page,
+			   int offset, size_t size, int flags)
 {
-	struct tls_context *tls_ctx = tls_get_ctx(sk);
 	struct iov_iter	msg_iter;
 	char *kaddr = kmap(page);
 	struct kvec iov;
@@ -575,14 +574,12 @@ int tls_device_sendpage(struct sock *sk, struct page *page,
 	if (flags & MSG_SENDPAGE_NOTLAST)
 		flags |= MSG_MORE;
 
-	mutex_lock(&tls_ctx->tx_lock);
-	lock_sock(sk);
-
 	if (flags & MSG_OOB) {
 		rc = -EOPNOTSUPP;
 		goto out;
 	}
 
+	sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 	iov.iov_base = kaddr + offset;
 	iov.iov_len = size;
 	iov_iter_kvec(&msg_iter, WRITE, &iov, 1, size);
@@ -591,9 +588,36 @@ int tls_device_sendpage(struct sock *sk, struct page *page,
 	kunmap(page);
 
 out:
+	return rc;
+}
+
+int tls_device_sendpage_locked(struct sock *sk, struct page *page,
+			       int offset, size_t size, int flags)
+{
+	if (flags & ~(MSG_MORE | MSG_DONTWAIT | MSG_NOSIGNAL |
+		      MSG_SENDPAGE_NOTLAST | MSG_SENDPAGE_NOPOLICY |
+		      MSG_NO_SHARED_FRAGS))
+		return -EOPNOTSUPP;
+
+	return tls_device_do_sendpage(sk, page, offset, size, flags);
+}
+
+int tls_device_sendpage(struct sock *sk, struct page *page,
+			int offset, size_t size, int flags)
+{
+	struct tls_context *tls_ctx = tls_get_ctx(sk);
+	int ret;
+
+	if (flags & ~(MSG_MORE | MSG_DONTWAIT | MSG_NOSIGNAL |
+		      MSG_SENDPAGE_NOTLAST | MSG_SENDPAGE_NOPOLICY))
+		return -EOPNOTSUPP;
+
+	mutex_lock(&tls_ctx->tx_lock);
+	lock_sock(sk);
+	ret = tls_device_do_sendpage(sk, page, offset, size, flags);
 	release_sock(sk);
 	mutex_unlock(&tls_ctx->tx_lock);
-	return rc;
+	return ret;
 }
 
 struct tls_record_info *tls_get_record(struct tls_offload_context_tx *context,
