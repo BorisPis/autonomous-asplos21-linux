@@ -2108,6 +2108,46 @@ bool tls_sw_stream_read(const struct sock *sk)
 		!skb_queue_empty(&ctx->rx_list);
 }
 
+int tls_read_sock(struct sock *sk, read_descriptor_t *desc,
+		  sk_read_actor_t recv_actor)
+{
+	struct tls_context *tls_ctx = tls_get_ctx(sk);
+	struct tls_sw_context_rx *ctx = tls_sw_ctx_rx(tls_ctx);
+	int flags = MSG_DONTWAIT, copied = 0, err, chunk, used;
+	struct strp_msg *rxm = NULL;
+	struct sk_buff *skb;
+	bool zc = false;
+
+	while ((skb = tls_wait_data(sk, NULL, flags, 0, &err)) != NULL) {
+		rxm = strp_msg(skb);
+		if (!ctx->decrypted) {
+			err = decrypt_skb_update(sk, skb, NULL, &chunk, &zc, false);
+			if (ctx->control != TLS_RECORD_TYPE_DATA)
+				break;
+
+			if (err < 0) {
+				tls_err_abort(sk, EBADMSG);
+				goto out;
+			}
+			ctx->decrypted = 1;
+		}
+
+		/* recv_actor on plaintext */
+		used = recv_actor(desc, skb, rxm->offset, rxm->full_len);
+		if (used <= 0) {
+			if (!copied)
+				copied = used;
+			break;
+		}
+		copied += used;
+		tls_sw_advance_skb(sk, skb, used);
+		if (!desc->count)
+			break;
+	}
+out:
+	return copied;
+}
+
 static int tls_read_size(struct strparser *strp, struct sk_buff *skb)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(strp->sk);
