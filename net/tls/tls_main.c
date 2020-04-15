@@ -900,6 +900,8 @@ static int __init tls_register(void)
 	tls_sw_proto_ops = inet_stream_ops;
 	tls_sw_proto_ops.splice_read = tls_sw_splice_read;
 	tls_sw_proto_ops.sendpage_locked   = tls_sw_sendpage_locked,
+	tls_sw_proto_ops.read_sock         = tls_read_sock;
+
 
 	tls_device_init();
 	tcp_register_ulp(&tcp_tls_ulp_ops);
