@@ -61,10 +61,9 @@ static DEFINE_MUTEX(tcpv6_prot_mutex);
 static struct proto *saved_tcpv4_prot;
 static DEFINE_MUTEX(tcpv4_prot_mutex);
 static struct proto tls_prots[TLS_NUM_PROTS][TLS_NUM_CONFIG][TLS_NUM_CONFIG];
-static struct proto_ops tls_proto_ops[TLS_NUM_CONFIG][TLS_NUM_CONFIG];
+static struct proto_ops tls_sw_proto_ops;
 static void build_protos(struct proto prot[TLS_NUM_CONFIG][TLS_NUM_CONFIG],
 			 const struct proto *base);
-static void build_proto_ops(struct proto_ops proto_ops[TLS_NUM_CONFIG][TLS_NUM_CONFIG]);
 
 void update_sk_prot(struct sock *sk, struct tls_context *ctx)
 {
@@ -72,8 +71,6 @@ void update_sk_prot(struct sock *sk, struct tls_context *ctx)
 
 	WRITE_ONCE(sk->sk_prot,
 		   &tls_prots[ip_ver][ctx->tx_conf][ctx->rx_conf]);
-	WRITE_ONCE(sk->sk_socket->ops,
-		   &tls_proto_ops[ctx->tx_conf][ctx->rx_conf]);
 }
 
 int wait_on_pending_writer(struct sock *sk, long *timeo)
@@ -605,6 +602,8 @@ static int do_tls_setsockopt_conf(struct sock *sk, char __user *optval,
 	if (tx) {
 		ctx->sk_write_space = sk->sk_write_space;
 		sk->sk_write_space = tls_write_space;
+	} else {
+		sk->sk_socket->ops = &tls_sw_proto_ops;
 	}
 	goto out;
 
@@ -692,39 +691,6 @@ static void tls_build_proto(struct sock *sk)
 		}
 		mutex_unlock(&tcpv4_prot_mutex);
 	}
-
-	build_proto_ops(tls_proto_ops);
-}
-
-static void build_proto_ops(struct proto_ops proto_ops[TLS_NUM_CONFIG][TLS_NUM_CONFIG])
-{
-	tls_proto_ops[TLS_BASE][TLS_BASE] = inet_stream_ops;
-
-	tls_proto_ops[TLS_SW][TLS_BASE] = inet_stream_ops;
-	tls_proto_ops[TLS_SW][TLS_BASE].sendpage_locked   = tls_sw_sendpage_locked;
-
-	tls_proto_ops[TLS_BASE][TLS_SW] = inet_stream_ops;
-	tls_proto_ops[TLS_BASE][TLS_SW].splice_read       = tls_sw_splice_read;
-	tls_proto_ops[TLS_BASE][TLS_SW].read_sock         = tls_read_sock;
-
-	tls_proto_ops[TLS_SW][TLS_SW] = inet_stream_ops;
-	tls_proto_ops[TLS_SW][TLS_SW].sendpage_locked   = tls_sw_sendpage_locked;
-	tls_proto_ops[TLS_SW][TLS_SW].splice_read       = tls_sw_splice_read;
-	tls_proto_ops[TLS_SW][TLS_SW].read_sock         = tls_read_sock;
-
-#ifdef CONFIG_TLS_DEVICE
-	tls_proto_ops[TLS_HW][TLS_BASE] = inet_stream_ops;
-	tls_proto_ops[TLS_HW][TLS_BASE].sendpage_locked   = tls_device_sendpage_locked;
-
-	tls_proto_ops[TLS_BASE][TLS_HW] = inet_stream_ops;
-	tls_proto_ops[TLS_BASE][TLS_HW].splice_read       = tls_sw_splice_read;
-	tls_proto_ops[TLS_BASE][TLS_HW].read_sock         = tls_read_sock;
-
-	tls_proto_ops[TLS_HW][TLS_HW] = inet_stream_ops;
-	tls_proto_ops[TLS_HW][TLS_HW].sendpage_locked   = tls_device_sendpage_locked;
-	tls_proto_ops[TLS_HW][TLS_HW].splice_read       = tls_sw_splice_read;
-	tls_proto_ops[TLS_HW][TLS_HW].read_sock         = tls_read_sock;
-#endif
 }
 
 static void build_protos(struct proto prot[TLS_NUM_CONFIG][TLS_NUM_CONFIG],
@@ -930,6 +896,10 @@ static int __init tls_register(void)
 	err = register_pernet_subsys(&tls_proc_ops);
 	if (err)
 		return err;
+
+	tls_sw_proto_ops = inet_stream_ops;
+	tls_sw_proto_ops.splice_read = tls_sw_splice_read;
+	tls_sw_proto_ops.sendpage_locked   = tls_sw_sendpage_locked,
 
 	tls_device_init();
 	tcp_register_ulp(&tcp_tls_ulp_ops);
