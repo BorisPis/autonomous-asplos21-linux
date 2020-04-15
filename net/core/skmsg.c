@@ -499,6 +499,7 @@ struct sk_psock *sk_psock_init(struct sock *sk, int node)
 	if (!psock)
 		return NULL;
 
+	psock->type = SK_USER_DATA_TYPE_PSOCK;
 	psock->sk = sk;
 	psock->eval =  __SK_NONE;
 

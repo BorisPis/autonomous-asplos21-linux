@@ -282,7 +282,7 @@ static inline void sk_msg_sg_copy_clear(struct sk_msg *msg, u32 start)
 static inline struct sk_psock *sk_psock(const struct sock *sk)
 {
 	struct sk_psock *psock = rcu_dereference_sk_user_data(sk);
-	return (psock->type == SK_USER_DATA_TYPE_PSOCK) ? psock : NULL;
+	return (psock && psock->type == SK_USER_DATA_TYPE_PSOCK) ? psock : NULL;
 }
 
 static inline void sk_psock_queue_msg(struct sk_psock *psock,
