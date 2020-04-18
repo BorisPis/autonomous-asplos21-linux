@@ -47,6 +47,12 @@ module_param_named(rx_encrypted, rx_encrypted, int, 0444);
 int rx_encrypted_full;
 module_param_named(rx_encrypted_full, rx_encrypted_full, int, 0444);
 
+int zerocopy;
+module_param_named(zerocopy, zerocopy, int, 0644);
+
+int copycache;
+module_param_named(copycache, copycache, int, 0644);
+
 /* device_offload_lock is used to synchronize tls_dev_add
  * against NETDEV_DOWN notifications.
  */
@@ -392,7 +398,9 @@ static int tls_do_allocation(struct sock *sk,
 	return 0;
 }
 
-static int tls_device_copy_data(void *addr, size_t bytes, struct iov_iter *i)
+static noinline int tls_device_copy_data(void *addr, size_t bytes, struct iov_iter *i,
+	size_t (*copy_func)(void *addr, size_t bytes, struct iov_iter *i)
+)
 {
 	size_t pre_copy, nocache;
 
@@ -406,7 +414,7 @@ static int tls_device_copy_data(void *addr, size_t bytes, struct iov_iter *i)
 	}
 
 	nocache = round_down(bytes, SMP_CACHE_BYTES);
-	if (copy_from_iter_nocache(addr, nocache, i) != nocache)
+	if (copy_func(addr, nocache, i) != nocache)
 		return -EFAULT;
 	bytes -= nocache;
 	addr += nocache;
@@ -420,7 +428,8 @@ static int tls_device_copy_data(void *addr, size_t bytes, struct iov_iter *i)
 static int tls_push_data(struct sock *sk,
 			 struct iov_iter *msg_iter,
 			 size_t size, int flags,
-			 unsigned char record_type)
+			 unsigned char record_type,
+			 struct page *zc_page)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(sk);
 	struct tls_prot_info *prot = &tls_ctx->prot_info;
@@ -489,11 +498,27 @@ handle_error:
 		copy = min_t(size_t, size, (pfrag->size - pfrag->offset));
 		copy = min_t(size_t, copy, (max_open_record_len - record->len));
 
-		rc = tls_device_copy_data(page_address(pfrag->page) +
-					  pfrag->offset, copy, msg_iter);
-		if (rc)
-			goto handle_error;
-		tls_append_frag(record, pfrag, copy);
+		if (!zc_page) {
+			if (copycache)
+				rc = tls_device_copy_data(page_address(pfrag->page) +
+							  pfrag->offset, copy, msg_iter,
+							  copy_from_iter);
+			else
+				rc = tls_device_copy_data(page_address(pfrag->page) +
+							  pfrag->offset, copy, msg_iter,
+							  copy_from_iter_nocache);
+			if (rc)
+				goto handle_error;
+			tls_append_frag(record, pfrag, copy);
+		} else {
+			struct page_frag _pfrag;
+
+			copy = min_t(size_t, size, (max_open_record_len - record->len));
+			_pfrag.page = zc_page;
+			_pfrag.offset = 0;
+			_pfrag.size = copy;
+			tls_append_frag(record, &_pfrag, copy);
+		}
 
 		size -= copy;
 		if (!size) {
@@ -555,7 +580,7 @@ int tls_device_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 	}
 
 	rc = tls_push_data(sk, &msg->msg_iter, size,
-			   msg->msg_flags, record_type);
+			   msg->msg_flags, record_type, NULL);
 
 out:
 	release_sock(sk);
@@ -567,7 +592,7 @@ int tls_device_do_sendpage(struct sock *sk, struct page *page,
 			   int offset, size_t size, int flags)
 {
 	struct iov_iter	msg_iter;
-	char *kaddr = kmap(page);
+	char *kaddr;
 	struct kvec iov;
 	int rc;
 
@@ -579,12 +604,20 @@ int tls_device_do_sendpage(struct sock *sk, struct page *page,
 		goto out;
 	}
 
+	/* TODO: maybe kmap the page anyway? */
+	if (zerocopy) {
+		rc = tls_push_data(sk, &msg_iter, size,
+				   flags, TLS_RECORD_TYPE_DATA, page);
+		goto out;
+	}
+
 	sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
+	kaddr = kmap(page);
 	iov.iov_base = kaddr + offset;
 	iov.iov_len = size;
 	iov_iter_kvec(&msg_iter, WRITE, &iov, 1, size);
 	rc = tls_push_data(sk, &msg_iter, size,
-			   flags, TLS_RECORD_TYPE_DATA);
+			   flags, TLS_RECORD_TYPE_DATA, NULL);
 	kunmap(page);
 
 out:
@@ -685,7 +718,7 @@ static int tls_device_push_pending_record(struct sock *sk, int flags)
 	struct iov_iter	msg_iter;
 
 	iov_iter_kvec(&msg_iter, WRITE, NULL, 0, 0);
-	return tls_push_data(sk, &msg_iter, 0, flags, TLS_RECORD_TYPE_DATA);
+	return tls_push_data(sk, &msg_iter, 0, flags, TLS_RECORD_TYPE_DATA, NULL);
 }
 
 void tls_device_write_space(struct sock *sk, struct tls_context *ctx)
