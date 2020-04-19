@@ -1424,7 +1424,8 @@ void mlx5e_handle_rx_cqe_mpwrq(struct mlx5e_rq *rq, struct mlx5_cqe64 *cqe)
 	if (mlx5_drop_prob) {
 		u32 rand, drop_count;
 
-		rand = get_cycles();
+		//rand = get_cycles();
+		get_random_bytes(&rand, sizeof(u32));
 		drop_count = rand % mlx5_drop_prob;
 		if (1 == drop_count)
 			goto mpwrq_cqe_out;
