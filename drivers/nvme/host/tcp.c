@@ -55,6 +55,7 @@ MODULE_PARM_DESC(trace, "Enable tracing operations.");
 
 DEFINE_PER_CPU_ALIGNED(stats_t, copy_stats);
 DEFINE_PER_CPU_ALIGNED(stats_t, crc_stats);
+DEFINE_PER_CPU_ALIGNED(stats_t, tx_crc_stats);
 bool			tracing;
 uint64_t fix;
 
@@ -67,6 +68,7 @@ static void set_tracing_on(void)
 	for_each_possible_cpu(i) {
 		memset(&per_cpu(copy_stats, i), 0, sizeof(copy_stats));
 		memset(&per_cpu(crc_stats, i), 0, sizeof(crc_stats));
+		memset(&per_cpu(tx_crc_stats, i), 0, sizeof(tx_crc_stats));
 	}
 }
 
@@ -99,6 +101,16 @@ static void print_tracing(void)
 					per_cpu(crc_stats, i).sum2,
 					per_cpu(crc_stats, i).min,
 					per_cpu(crc_stats, i).max);
+	}
+	for_each_possible_cpu(i) {
+		//if (per_cpu(tx_crc_stats, i).sum)
+			pr_err("tx_crc %4d %16lu %16llu %16llu %16llu %16llu\n",
+					i,
+					per_cpu(tx_crc_stats, i).count,
+					per_cpu(tx_crc_stats, i).sum,
+					per_cpu(tx_crc_stats, i).sum2,
+					per_cpu(tx_crc_stats, i).min,
+					per_cpu(tx_crc_stats, i).max);
 	}
 	pr_err("tracing_off done\n");
 }
@@ -437,10 +449,12 @@ static inline void nvme_tcp_ddgst_update(struct ahash_request *hash,
 {
 	struct scatterlist sg;
 
+	trace_start(this_cpu_ptr(&tx_crc_stats));
 	sg_init_marker(&sg, 1);
 	sg_set_page(&sg, page, len, off);
 	ahash_request_set_crypt(hash, &sg, NULL, len);
 	crypto_ahash_update(hash);
+	trace_end(this_cpu_ptr(&tx_crc_stats));
 }
 
 static inline void nvme_tcp_hdgst(struct ahash_request *hash,
@@ -1381,6 +1395,7 @@ static int nvme_tcp_try_send_data(struct nvme_tcp_request *req)
 		size_t len = nvme_tcp_req_cur_length(req);
 		bool last = nvme_tcp_pdu_last_send(req, len);
 		int ret, flags = MSG_DONTWAIT;
+		unsigned long irqflags;
 
 		if (last && !queue->data_digest)
 			flags |= MSG_EOR;
@@ -1399,9 +1414,25 @@ static int nvme_tcp_try_send_data(struct nvme_tcp_request *req)
 			return ret;
 
 		nvme_tcp_advance_req(req, ret);
+
+		if (trace && !tracing)
+			trace_on();
+
+		if (tracing) {
+			preempt_disable(); 			// disable preemption on this core
+			raw_local_irq_save(irqflags); 		// disable hard interrupts on this core
+		}
 		if (queue->data_digest)
 			nvme_tcp_ddgst_update(queue->snd_hash, page,
 					offset, ret);
+		if (tracing) {
+			raw_local_irq_restore(irqflags); 	// enable hard interrupts on this core
+			preempt_enable(); 			// enable preemption on this core
+		}
+		if (!trace && tracing) {
+			trace_off();
+			print_tracing();
+		}
 
 		/* fully successful last write*/
 		if (last && ret == len) {
