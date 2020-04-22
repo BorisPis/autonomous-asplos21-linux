@@ -429,6 +429,7 @@ static int tls_push_data(struct sock *sk,
 			 struct iov_iter *msg_iter,
 			 size_t size, int flags,
 			 unsigned char record_type,
+			 unsigned int zc_offset,
 			 struct page *zc_page)
 {
 	struct tls_context *tls_ctx = tls_get_ctx(sk);
@@ -513,9 +514,10 @@ handle_error:
 		} else {
 			struct page_frag _pfrag;
 
-			copy = min_t(size_t, size, (max_open_record_len - record->len));
+			copy = min_t(size_t, (size - zc_offset),
+				     (max_open_record_len - record->len));
 			_pfrag.page = zc_page;
-			_pfrag.offset = 0;
+			_pfrag.offset = zc_offset;
 			_pfrag.size = copy;
 			tls_append_frag(record, &_pfrag, copy);
 		}
@@ -580,7 +582,7 @@ int tls_device_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 	}
 
 	rc = tls_push_data(sk, &msg->msg_iter, size,
-			   msg->msg_flags, record_type, NULL);
+			   msg->msg_flags, record_type, 0, NULL);
 
 out:
 	release_sock(sk);
@@ -607,7 +609,7 @@ int tls_device_do_sendpage(struct sock *sk, struct page *page,
 	/* TODO: maybe kmap the page anyway? */
 	if (zerocopy) {
 		rc = tls_push_data(sk, &msg_iter, size,
-				   flags, TLS_RECORD_TYPE_DATA, page);
+				   flags, TLS_RECORD_TYPE_DATA, offset, page);
 		goto out;
 	}
 
@@ -617,7 +619,7 @@ int tls_device_do_sendpage(struct sock *sk, struct page *page,
 	iov.iov_len = size;
 	iov_iter_kvec(&msg_iter, WRITE, &iov, 1, size);
 	rc = tls_push_data(sk, &msg_iter, size,
-			   flags, TLS_RECORD_TYPE_DATA, NULL);
+			   flags, TLS_RECORD_TYPE_DATA, 0, NULL);
 	kunmap(page);
 
 out:
@@ -718,7 +720,7 @@ static int tls_device_push_pending_record(struct sock *sk, int flags)
 	struct iov_iter	msg_iter;
 
 	iov_iter_kvec(&msg_iter, WRITE, NULL, 0, 0);
-	return tls_push_data(sk, &msg_iter, 0, flags, TLS_RECORD_TYPE_DATA, NULL);
+	return tls_push_data(sk, &msg_iter, 0, flags, TLS_RECORD_TYPE_DATA, 0, NULL);
 }
 
 void tls_device_write_space(struct sock *sk, struct tls_context *ctx)
