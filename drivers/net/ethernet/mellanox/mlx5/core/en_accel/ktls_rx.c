@@ -416,7 +416,7 @@ void mlx5e_ktls_del_rx(struct net_device *netdev,
 	if (!rx_priv->rule.rule)
 		return;
 
-	flush_work(priv->wq);
+	flush_workqueue(priv->wq);
 
 	mlx5_del_flow_rules(rx_priv->rule.rule);
 	rx_priv->rule.rule = NULL;
