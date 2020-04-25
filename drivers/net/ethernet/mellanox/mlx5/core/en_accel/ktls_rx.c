@@ -30,6 +30,7 @@ struct mlx5e_ktls_rx_resync_ctx {
 	struct work_struct work;
 	struct mlx5e_priv *priv;
 
+	bool is_response;
 	u32 hw_seq;
 	u32 sw_seq;
 	__be64 sw_rcd_sn_be;
@@ -217,11 +218,48 @@ mlx5e_ktls_rx_post_get_psv(struct mlx5e_priv *priv,
 
 	spin_lock(&c->async_icosq_lock);
 
+	if (unlikely(!mlx5e_wqc_has_room_for(wq, sq->cc, sq->pc, mlx5e_ktls_get_sq_room())))
+		pr_err("%s no room cc %d pc %d\n", __func__, sq->cc, sq->pc);
+
 	wqe = post_get_progress_params(sq, priv_rx);
 	if (likely(wqe))
 		mlx5e_notify_hw(wq, sq->pc, sq->uar_map, &wqe->ctrl);
 
 	spin_unlock(&c->async_icosq_lock);
+}
+
+static void handle_seq_match(struct mlx5e_ktls_offload_context_rx *priv_rx,
+			     struct mlx5e_icosq *sq)
+{
+	struct tls12_crypto_info_aes_gcm_128 *info = &priv_rx->crypto_info;
+	u8 *ctx = priv_rx->resync.progress.ctx;
+
+	u16 contig_wqebbs_room, pi;
+	struct mlx5_wqe_ctrl_seg *cseg;
+	struct mlx5_wq_cyc *wq;
+
+	u8 tracker_state = MLX5_GET(tls_progress_params, ctx, record_tracker_state);
+	u8 auth_state = MLX5_GET(tls_progress_params, ctx, auth_state);
+
+	if (tracker_state != MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_TRACKING ||
+	    auth_state != MLX5_TLS_PROGRESS_PARAMS_AUTH_STATE_NO_OFFLOAD)
+		return;
+
+	memcpy(info->rec_seq, &priv_rx->resync.sw_rcd_sn_be, sizeof(info->rec_seq));
+
+	wq = &sq->wq;
+
+	pi = mlx5_wq_cyc_ctr2ix(wq, sq->pc);
+	if (unlikely(!mlx5e_wqc_has_room_for(wq, sq->cc, sq->pc, mlx5e_ktls_get_sq_room())))
+		pr_err("%s no room cc %d pc %d\n", __func__, sq->cc, sq->pc);
+	contig_wqebbs_room = mlx5_wq_cyc_get_contig_wqebbs(wq, pi);
+	if (unlikely(contig_wqebbs_room <
+		     MLX5E_KTLS_STATIC_WQEBBS + MLX5E_KTLS_SET_PROGRESS_WQEBBS))
+		mlx5e_fill_icosq_frag_edge(sq, wq, pi, contig_wqebbs_room);
+
+	cseg = post_static_params(sq, priv_rx);
+	mlx5e_notify_hw(wq, sq->pc, sq->uar_map, cseg);
+
 }
 
 static void accel_handle_resync_work(struct work_struct *work)
@@ -231,7 +269,17 @@ static void accel_handle_resync_work(struct work_struct *work)
 	struct mlx5e_ktls_offload_context_rx *priv_rx =
 		container_of(resync, struct mlx5e_ktls_offload_context_rx, resync);
 
-	mlx5e_ktls_rx_post_get_psv(resync->priv, priv_rx);
+	if (resync->is_response) {
+		struct mlx5e_channel *c = resync->priv->channels.c[priv_rx->rxq];
+		struct mlx5e_icosq *sq = &c->async_icosq;
+
+		spin_lock(&c->async_icosq_lock);
+		handle_seq_match(priv_rx, sq);
+		spin_unlock(&c->async_icosq_lock);
+	} else {
+		mlx5e_ktls_rx_post_get_psv(resync->priv, priv_rx);
+	}
+
 }
 
 void mlx5e_accel_rx_resync_init(struct mlx5e_ktls_rx_resync_ctx *resync,
@@ -257,6 +305,8 @@ mlx5e_ktls_rx_post_param_wqes(struct mlx5e_channel *c,
 
 	pi = mlx5_wq_cyc_ctr2ix(wq, sq->pc);
 	contig_wqebbs_room = mlx5_wq_cyc_get_contig_wqebbs(wq, pi);
+	if (unlikely(!mlx5e_wqc_has_room_for(wq, sq->cc, sq->pc, mlx5e_ktls_get_sq_room())))
+		pr_err("%s no room cc %d pc %d\n", __func__, sq->cc, sq->pc);
 	if (unlikely(contig_wqebbs_room <
 		     MLX5E_KTLS_STATIC_WQEBBS + MLX5E_KTLS_SET_PROGRESS_WQEBBS))
 		mlx5e_fill_icosq_frag_edge(sq, wq, pi, contig_wqebbs_room);
@@ -373,50 +423,23 @@ void mlx5e_ktls_del_rx(struct net_device *netdev,
 	kvfree(rx_priv);
 }
 
-static void handle_seq_match(struct mlx5e_ktls_offload_context_rx *priv_rx,
-			     struct mlx5e_icosq *sq)
-{
-	struct tls12_crypto_info_aes_gcm_128 *info = &priv_rx->crypto_info;
-	u8 *ctx = priv_rx->resync.progress.ctx;
-
-	u16 contig_wqebbs_room, pi;
-	struct mlx5_wqe_ctrl_seg *cseg;
-	struct mlx5_wq_cyc *wq;
-
-	u8 tracker_state = MLX5_GET(tls_progress_params, ctx, record_tracker_state);
-	u8 auth_state = MLX5_GET(tls_progress_params, ctx, auth_state);
-
-	if (tracker_state != MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_TRACKING ||
-	    auth_state != MLX5_TLS_PROGRESS_PARAMS_AUTH_STATE_NO_OFFLOAD)
-		return;
-
-	memcpy(info->rec_seq, &priv_rx->resync.sw_rcd_sn_be, sizeof(info->rec_seq));
-
-	wq = &sq->wq;
-
-	pi = mlx5_wq_cyc_ctr2ix(wq, sq->pc);
-	contig_wqebbs_room = mlx5_wq_cyc_get_contig_wqebbs(wq, pi);
-	if (unlikely(contig_wqebbs_room <
-		     MLX5E_KTLS_STATIC_WQEBBS + MLX5E_KTLS_SET_PROGRESS_WQEBBS))
-		mlx5e_fill_icosq_frag_edge(sq, wq, pi, contig_wqebbs_room);
-
-	cseg = post_static_params(sq, priv_rx);
-	mlx5e_notify_hw(wq, sq->pc, sq->uar_map, cseg);
-
-}
-
 void mlx5e_ktls_handle_get_psv_completion(struct mlx5e_icosq_wqe_info *wi,
 					  struct mlx5e_icosq *sq)
 {
 	struct mlx5e_ktls_offload_context_rx *priv_rx = wi->accel.priv_rx;
 	struct mlx5_seg_tls_progress_params *progress = &priv_rx->resync.progress;
+	struct mlx5e_channel *c = sq->channel;
+	struct net_device *netdev = c->netdev;
+	struct mlx5e_priv *priv = netdev_priv(netdev);
 	u8 *ctx = progress->ctx;
 
 	//print_hex_dump(KERN_WARNING, "", DUMP_PREFIX_OFFSET, 16, 1,
 	//	       progress, sizeof(*progress), false);
+
 	priv_rx->resync.hw_seq = MLX5_GET(tls_progress_params, ctx, hw_resync_tcp_sn);
+	priv_rx->resync.is_response = true;
 	if (priv_rx->resync.hw_seq == priv_rx->resync.sw_seq)
-		handle_seq_match(priv_rx, sq);
+		queue_work(priv->wq, &priv_rx->resync.work);
 }
 
 static void queue_get_psv(struct net_device *netdev, struct sock *sk)
@@ -427,6 +450,7 @@ static void queue_get_psv(struct net_device *netdev, struct sock *sk)
 	struct mlx5e_ktls_rx_resync_ctx *resync = &rx_priv->resync;
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 
+	resync->is_response = false;
 	queue_work(priv->wq /* TODO Use separate TLS queue? */ , &resync->work);
 }
 
