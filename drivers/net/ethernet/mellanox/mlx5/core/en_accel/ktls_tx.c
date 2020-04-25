@@ -127,8 +127,8 @@ void mlx5e_ktls_del_tx(struct net_device *netdev,
 		mlx5e_get_ktls_tx_priv_ctx(tls_ctx);
 	struct mlx5e_priv *priv = netdev_priv(netdev);
 
-	mlx5_ktls_destroy_key(priv->mdev, tx_priv->key_id);
 	mlx5e_destroy_tis(priv->mdev, tx_priv->tisn);
+	mlx5_ktls_destroy_key(priv->mdev, tx_priv->key_id);
 	kvfree(tx_priv);
 }
 
