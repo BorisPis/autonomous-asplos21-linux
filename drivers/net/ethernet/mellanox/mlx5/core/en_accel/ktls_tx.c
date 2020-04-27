@@ -186,6 +186,7 @@ post_progress_params(struct mlx5e_txqsq *sq,
 
 	wqe = mlx5e_sq_fetch_wqe(sq, sizeof(*wqe), &pi);
 	mlx5e_ktls_build_progress_params(wqe, sq->pc, sq->sqn, priv_tx->tisn, fence,
+					 0,
 					 TLS_OFFLOAD_CTX_DIR_TX);
 	tx_fill_wi(sq, pi, MLX5E_KTLS_SET_PROGRESS_WQEBBS, 0, NULL);
 	sq->pc += MLX5E_KTLS_SET_PROGRESS_WQEBBS;

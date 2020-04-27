@@ -81,12 +81,15 @@ mlx5e_ktls_build_static_params(struct mlx5e_set_tls_static_params_wqe *wqe,
 }
 
 static void
-fill_progress_params(struct mlx5_seg_tls_progress_params *params, u32 tis_tir_num)
+fill_progress_params(struct mlx5_seg_tls_progress_params *params, u32 tis_tir_num,
+		     u32 next_record_tcp_sn)
 {
 	u8 *ctx = params->ctx;
 
 	params->tis_tir_num = cpu_to_be32(tis_tir_num);
 
+	MLX5_SET(tls_progress_params, ctx, next_record_tcp_sn,
+		 next_record_tcp_sn);
 	MLX5_SET(tls_progress_params, ctx, record_tracker_state,
 		 MLX5_TLS_PROGRESS_PARAMS_RECORD_TRACKER_STATE_START);
 	MLX5_SET(tls_progress_params, ctx, auth_state,
@@ -97,6 +100,7 @@ void
 mlx5e_ktls_build_progress_params(struct mlx5e_set_tls_progress_params_wqe *wqe,
 				 u16 pc, u32 sqn,
 				 u32 tis_tir_num, bool fence,
+				 u32 next_record_tcp_sn,
 				 enum tls_offload_ctx_dir direction)
 {
 	struct mlx5_wqe_ctrl_seg *cseg = &wqe->ctrl;
@@ -112,6 +116,6 @@ mlx5e_ktls_build_progress_params(struct mlx5e_set_tls_progress_params_wqe *wqe,
 					     PROGRESS_PARAMS_DS_CNT);
 	cseg->fm_ce_se         = fence ? MLX5_FENCE_MODE_INITIATOR_SMALL : 0;
 
-	fill_progress_params(&wqe->params, tis_tir_num);
+	fill_progress_params(&wqe->params, tis_tir_num, next_record_tcp_sn);
 }
 

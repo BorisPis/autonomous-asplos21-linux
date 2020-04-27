@@ -146,13 +146,15 @@ post_static_params(struct mlx5e_icosq *sq,
 
 static struct mlx5_wqe_ctrl_seg *
 post_progress_params(struct mlx5e_icosq *sq,
-		     struct mlx5e_ktls_offload_context_rx *priv_rx)
+		     struct mlx5e_ktls_offload_context_rx *priv_rx,
+		     u32 next_record_tcp_sn)
 {
 	struct mlx5e_set_tls_progress_params_wqe *wqe;
 	u16 pi;
 
 	wqe = mlx5e_icosq_fetch_wqe(sq, sizeof(*wqe), &pi);
 	mlx5e_ktls_build_progress_params(wqe, sq->pc, sq->sqn, priv_rx->tirn, false,
+					 next_record_tcp_sn,
 					 TLS_OFFLOAD_CTX_DIR_RX);
 	icosq_fill_wi(sq, pi, MLX5E_ICOSQ_WQE_SET_PSV_TLS, MLX5E_KTLS_SET_PROGRESS_WQEBBS,
 		      priv_rx);
@@ -291,7 +293,8 @@ void mlx5e_accel_rx_resync_init(struct mlx5e_ktls_rx_resync_ctx *resync,
 
 static void
 mlx5e_ktls_rx_post_param_wqes(struct mlx5e_channel *c,
-			      struct mlx5e_ktls_offload_context_rx *priv_rx)
+			      struct mlx5e_ktls_offload_context_rx *priv_rx,
+			      u32 next_record_tcp_sn)
 {
 	struct mlx5_wqe_ctrl_seg *cseg;
 	u16 contig_wqebbs_room, pi;
@@ -312,7 +315,7 @@ mlx5e_ktls_rx_post_param_wqes(struct mlx5e_channel *c,
 		mlx5e_fill_icosq_frag_edge(sq, wq, pi, contig_wqebbs_room);
 
 	post_static_params(sq, priv_rx);
-	cseg = post_progress_params(sq, priv_rx);
+	cseg = post_progress_params(sq, priv_rx, next_record_tcp_sn);
 	mlx5e_notify_hw(wq, sq->pc, sq->uar_map, cseg);
 
 	spin_unlock(&c->async_icosq_lock);
@@ -393,7 +396,7 @@ int mlx5e_ktls_add_rx(struct net_device *netdev, struct sock *sk,
 	       __func__, __LINE__, rxq, rqn, rx_priv->tirn);
 	accel_rule_init(&rx_priv->rule, priv, sk);
 	mlx5e_accel_rx_resync_init(&rx_priv->resync, priv);
-	mlx5e_ktls_rx_post_param_wqes(priv->channels.c[rxq], rx_priv);
+	mlx5e_ktls_rx_post_param_wqes(priv->channels.c[rxq], rx_priv, start_offload_tcp_sn);
 
 	return 0;
 
