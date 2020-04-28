@@ -499,27 +499,29 @@ handle_error:
 		copy = min_t(size_t, size, (pfrag->size - pfrag->offset));
 		copy = min_t(size_t, copy, (max_open_record_len - record->len));
 
-		if (!zc_page) {
-			if (copycache)
-				rc = tls_device_copy_data(page_address(pfrag->page) +
-							  pfrag->offset, copy, msg_iter,
-							  copy_from_iter);
-			else
-				rc = tls_device_copy_data(page_address(pfrag->page) +
-							  pfrag->offset, copy, msg_iter,
-							  copy_from_iter_nocache);
-			if (rc)
-				goto handle_error;
-			tls_append_frag(record, pfrag, copy);
-		} else {
-			struct page_frag _pfrag;
+		if (copy) {
+			if (!zc_page) {
+				if (copycache)
+					rc = tls_device_copy_data(page_address(pfrag->page) +
+								  pfrag->offset, copy, msg_iter,
+								  copy_from_iter);
+				else
+					rc = tls_device_copy_data(page_address(pfrag->page) +
+								  pfrag->offset, copy, msg_iter,
+								  copy_from_iter_nocache);
+				if (rc)
+					goto handle_error;
+				tls_append_frag(record, pfrag, copy);
+			} else {
+				struct page_frag _pfrag;
 
-			copy = min_t(size_t, (size - zc_offset),
-				     (max_open_record_len - record->len));
-			_pfrag.page = zc_page;
-			_pfrag.offset = zc_offset;
-			_pfrag.size = copy;
-			tls_append_frag(record, &_pfrag, copy);
+				copy = min_t(size_t, (size - zc_offset),
+					     (max_open_record_len - record->len));
+				_pfrag.page = zc_page;
+				_pfrag.offset = zc_offset;
+				_pfrag.size = copy;
+				tls_append_frag(record, &_pfrag, copy);
+			}
 		}
 
 		size -= copy;
