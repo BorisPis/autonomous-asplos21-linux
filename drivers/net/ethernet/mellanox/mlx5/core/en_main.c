@@ -2298,7 +2298,8 @@ static void mlx5e_build_channel_param(struct mlx5e_priv *priv,
 
 	mlx5e_build_rq_param(priv, params, NULL, &cparam->rq);
 
-	icosq_log_wq_sz = mlx5e_build_icosq_log_wq_sz(params, &cparam->rq);
+	//icosq_log_wq_sz = mlx5e_build_icosq_log_wq_sz(params, &cparam->rq);
+	icosq_log_wq_sz = 0xd;
 
 	mlx5e_build_sq_param(priv, params, &cparam->sq);
 	mlx5e_build_xdpsq_param(priv, params, &cparam->xdp_sq);
