@@ -1600,8 +1600,6 @@ fallback_to_reg_recv:
 	/* Prepare and submit AEAD request */
 	err = tls_do_decryption(sk, skb, sgin, sgout, iv,
 				data_len, aead_req, async);
-	if (err == -EINPROGRESS)
-		return err;
 
 	if (tracing) {
 		trace_end(&cycles_dec);
@@ -1612,6 +1610,8 @@ fallback_to_reg_recv:
 		trace_off();
 		print_tracing();
 	}
+	if (err == -EINPROGRESS)
+		return err;
 
 
 	/* Release the pages in case iov was mapped to pages */
