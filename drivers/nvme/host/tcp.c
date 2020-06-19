@@ -818,7 +818,8 @@ static inline void nvme_tcp_end_request(struct request *rq, u16 status)
 static int __nvme_skb_datagram_iter(const struct sk_buff *skb, int offset,
 			       struct iov_iter *to, int len, bool fault_short,
 			       size_t (*cb)(const void *, size_t, void *,
-					    struct iov_iter *), void *data)
+					    struct iov_iter *, bool zc),
+			       void *data, bool zc)
 {
 	int start = skb_headlen(skb);
 	int i, copy = start - offset, start_off = offset, n;
@@ -828,7 +829,7 @@ static int __nvme_skb_datagram_iter(const struct sk_buff *skb, int offset,
 	if (copy > 0) {
 		if (copy > len)
 			copy = len;
-		n = cb(skb->data + offset, copy, data, to);
+		n = cb(skb->data + offset, copy, data, to, zc);
 		offset += n;
 		if (n != copy)
 			goto short_copy;
@@ -851,7 +852,7 @@ static int __nvme_skb_datagram_iter(const struct sk_buff *skb, int offset,
 			if (copy > len)
 				copy = len;
 			n = cb(vaddr + skb_frag_off(frag) + offset - start,
-			       copy, data, to);
+			       copy, data, to, zc);
 			kunmap(page);
 			offset += n;
 			if (n != copy)
@@ -872,7 +873,7 @@ static int __nvme_skb_datagram_iter(const struct sk_buff *skb, int offset,
 			if (copy > len)
 				copy = len;
 			if (__nvme_skb_datagram_iter(frag_iter, offset - start,
-						to, copy, fault_short, cb, data))
+						to, copy, fault_short, cb, data, zc))
 				goto fault;
 			if ((len -= copy) == 0)
 				return 0;
@@ -1018,12 +1019,12 @@ static void nvme_memcpy_to_page(struct page *page, size_t offset, const char *fr
 	kunmap_atomic(to);
 }
 
-static size_t nvme_copy_to_iter(const void *addr, size_t bytes, struct iov_iter *i)
+static size_t nvme_copy_to_iter(const void *addr, size_t bytes, struct iov_iter *i, bool zc)
 {
 	const char *from = addr;
 
 	//trace_start(this_cpu_ptr(&copy_stats));
-	if (!nvmeotcp_zerocopy) {
+	if (!nvmeotcp_zerocopy || !zc) {
 		if (iter_is_iovec(i))
 			might_fault();
 		nvme_iterate_and_advance(i, bytes, v,
@@ -1043,14 +1044,14 @@ static size_t nvme_copy_to_iter(const void *addr, size_t bytes, struct iov_iter 
 }
 
 size_t nvme_hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
-		struct iov_iter *i)
+		struct iov_iter *i, bool zc)
 {
 #ifdef CONFIG_CRYPTO
 	struct ahash_request *hash = hashp;
 	struct scatterlist sg;
 	size_t copied;
 
-	copied = nvme_copy_to_iter(addr, bytes, i);
+	copied = nvme_copy_to_iter(addr, bytes, i, zc);
 
 	trace_start(this_cpu_ptr(&crc_stats));
 	if (!nvmeotcp_zerocrc) {
@@ -1066,7 +1067,7 @@ size_t nvme_hash_and_copy_to_iter(const void *addr, size_t bytes, void *hashp,
 }
 
 size_t nvme_hash_iter(const void *addr, size_t bytes, void *hashp,
-		struct iov_iter *i)
+		struct iov_iter *i, bool zc)
 {
 #ifdef CONFIG_CRYPTO
 	struct ahash_request *hash = hashp;
@@ -1090,44 +1091,44 @@ size_t nvme_hash_iter(const void *addr, size_t bytes, void *hashp,
 
 static inline int nvme_skb_copy_and_hash_datagram_iter(const struct sk_buff *skb, int offset,
 			   struct iov_iter *to, int len,
-			   struct ahash_request *hash)
+			   struct ahash_request *hash, bool zc)
 {
 	return __nvme_skb_datagram_iter(skb, offset, to, len, true,
-			nvme_hash_and_copy_to_iter, hash);
+			nvme_hash_and_copy_to_iter, hash, zc);
 }
 
 static inline size_t nvme_simple_copy_to_iter(const void *addr, size_t bytes,
-		void *data __always_unused, struct iov_iter *i)
+		void *data __always_unused, struct iov_iter *i, bool zc)
 {
-	return nvme_copy_to_iter(addr, bytes, i);
+	return nvme_copy_to_iter(addr, bytes, i, zc);
 }
 
 static inline int nvme_skb_copy_and_hash_datagram_iter2(const struct sk_buff *skb, int offset,
 			   struct iov_iter *to, int len,
-			   struct ahash_request *hash)
+			   struct ahash_request *hash, bool zc)
 {
 	int res;
 
 	trace_start(this_cpu_ptr(&crc_stats));
 	__nvme_skb_datagram_iter(skb, offset, to, len, true,
-				nvme_hash_iter, hash);
+				nvme_hash_iter, hash, zc);
 	trace_end(this_cpu_ptr(&crc_stats));
 
 	trace_start(this_cpu_ptr(&copy_stats));
 	res =  __nvme_skb_datagram_iter(skb, offset, to, len, false,
-			nvme_simple_copy_to_iter, NULL);
+			nvme_simple_copy_to_iter, NULL, zc);
 	trace_end(this_cpu_ptr(&copy_stats));
 	return res;
 }
 
 static int nvme_skb_copy_datagram_iter(const struct sk_buff *skb, int offset,
-			   struct iov_iter *to, int len)
+			   struct iov_iter *to, int len, bool zc)
 {
 	int res;
 
 	trace_start(this_cpu_ptr(&copy_stats));
 	res = __nvme_skb_datagram_iter(skb, offset, to, len, false,
-			nvme_simple_copy_to_iter, NULL);
+			nvme_simple_copy_to_iter, NULL, zc);
 	trace_end(this_cpu_ptr(&copy_stats));
 	return res;
 }
@@ -1204,10 +1205,10 @@ static int nvme_tcp_recv_data(struct nvme_tcp_queue *queue, struct sk_buff *skb,
 		if (!nvmeotcp_req || !zc || nvme_tcp_queue_id(queue) == 0) {
 			if (queue->data_digest)
 				ret = nvme_skb_copy_and_hash_datagram_iter2(skb, *offset,
-						&req->iter, recv_len, queue->rcv_hash);
+						&req->iter, recv_len, queue->rcv_hash, zc);
 			else
 				ret = nvme_skb_copy_datagram_iter(skb, *offset,
-						&req->iter, recv_len);
+						&req->iter, recv_len, zc);
 			if (ret) {
 				dev_err(queue->ctrl->ctrl.device,
 						"queue %d failed to copy request %#x data",
